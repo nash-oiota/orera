@@ -1,147 +1,119 @@
 # kiro-team
 
-tmux + kiro-cli を使ったマルチエージェント開発チームツール。PdM に指示するだけで、frontend / backend / infra / qa の specialist が自律的に動く。
+tmux + kiro-cli を使ったマルチエージェント開発チームツール。PdM に指示するだけで、specialist が自律的にタスクを分担して開発を進める。
 
 ## 必要なもの
 
 - tmux
 - kiro-cli
 
-## インストール（グローバル利用）
+## インストール
 
-任意のプロジェクトから使えるようにするには：
-
-```bash
-./scripts/install.sh
-```
-
-`~/.zshrc` または `~/.bashrc` に追加：
+プロジェクトに kiro-team をセットアップする：
 
 ```bash
-export PATH="$HOME/kiro-team/scripts:$PATH"
+bash ~/kiro-team/scripts/install.sh /path/to/your-project
 ```
 
-以降は任意のプロジェクトディレクトリで：
+インストール後の構成：
 
-```bash
-cd ~/my-project
-start.sh
 ```
-
-`tasks/` と `results/` はプロジェクトディレクトリに作られます。エージェント設定は `~/kiro-team/.kiro/agents/` を参照します。
-
-エージェントをカスタマイズする場合は `~/kiro-team/.kiro/agents/` を編集してください。
+your-project/
+├── kiro-team/
+│   ├── scripts/   # start.sh, stop.sh 等
+│   ├── tasks/     # PdM が書くタスクファイル（自動生成）
+│   ├── results/   # specialist が書く結果ファイル（自動生成）
+│   └── logs/      # セッションログ（自動生成）
+└── .kiro/
+    └── agents/    # kiro-team-*.json（kiro-cli が読む）
+```
 
 ## 使い方
 
 ```bash
-# チーム起動（PdM セッションにアタッチされる）
-./scripts/start.sh
+cd your-project
+
+# チーム起動
+./kiro-team/scripts/start.sh
 
 # チーム停止
-./scripts/stop.sh            # 通常停止（tasks/results はそのまま）
-./scripts/stop.sh --archive  # アーカイブして停止（別タスクに切り替える時）
-./scripts/stop.sh --clean    # 削除して停止（完全リセット）
+./kiro-team/scripts/stop.sh            # 通常停止
+./kiro-team/scripts/stop.sh --archive  # アーカイブして停止
+./kiro-team/scripts/stop.sh --clean    # 完全リセット
 
 # 状態確認
-./scripts/status.sh
+./kiro-team/scripts/status.sh
 ```
 
 ## チーム構成
 
 | エージェント | 役割 |
 |---|---|
-| pdm | PdM + TL。ユーザーと会話し、specialist に委任 |
-| frontend | UI/UX 実装 |
-| backend | API・ビジネスロジック実装 |
-| infra | デプロイ・環境構成 |
-| qa | テスト・品質管理 |
+| kiro-team-pdm | PdM + TL。ユーザーと会話し、specialist に委任 |
+| kiro-team-frontend | UI/UX 実装 |
+| kiro-team-backend | API・ビジネスロジック実装 |
+| kiro-team-infra | デプロイ・環境構成 |
+| kiro-team-qa | テスト・品質管理 |
+| kiro-team-reviewer | frontend + backend の結合レビュー |
 
-## カスタマイズ
+## エージェントの追加
 
-`.kiro/agents/` に JSON ファイルを追加するだけでチームメンバーを増やせる。
+### 1. エージェント定義ファイルを作成
+
+`~/kiro-team/.kiro/agents/kiro-team-<name>.json` を作成する。
+ファイル名と `name` フィールドは必ず一致させること。
 
 ```json
 {
-  "name": "designer",
-  "prompt": "You are a UI Designer...",
-  "tools": ["fs_write", "fs_read"],
-  "allowedTools": ["fs_write", "fs_read"]
+  "name": "kiro-team-designer",
+  "prompt": "You are a UI Designer specialist in kiro-team.\n\n## IMPORTANT: Execution Constraints\n- NEVER start long-running processes\n\n## Your Role\n...\n\n## Receiving Tasks\nWhen you receive a [SYSTEM] message, immediately read kiro-team/tasks/kiro-team-designer.md and execute the task.\n\n## Reporting Results\nWrite to kiro-team/results/kiro-team-designer.md:\n```\nTASK_ID: <id>\nSTATUS: QUESTION | BLOCKED | COMPLETE\n---\n<content>\n```",
+  "tools": ["execute_bash", "fs_write", "fs_read"],
+  "allowedTools": ["execute_bash", "fs_write", "fs_read"],
+  "resources": [
+    "file://~/kiro-team/steering/branch-strategy.md"
+  ]
 }
 ```
 
-**注意**: `name` フィールドはファイル名（拡張子除く）と一致させること。
+### 2. PdM のエージェントリストを更新
 
-## 動作確認手順
+`~/kiro-team/.kiro/agents/kiro-team-pdm.json` の `## Team Members` セクションに追加：
 
-### クリーンスタート
+```
+- kiro-team-designer: UI design, wireframes, design system
+```
+
+また `## Task Delegation` の Examples にも追加：
+
+```
+- kiro-team/tasks/kiro-team-designer.md
+```
+
+### 3. プロジェクトに再インストール
 
 ```bash
-tmux kill-server
-rm -rf backend frontend qa
-rm -f tasks/*.md tasks/*.sent tasks/.pane_* tasks/.specialist_pane tasks/.pdm_pane
-rm -f results/*.md results/*.notified results/*.mtime
-./scripts/start.sh
-```
-
-### PdM への命令例
-
-```
-シンプルなメモアプリを作ってください。backendはNode.jsでREST API、frontendはHTML/CSS/JSでUI、qaはテストシナリオを作成してください。
-```
-
-### 確認ポイント
-
-| 確認内容 | コマンド |
-|---|---|
-| タスク配送状況 | `ls tasks/` |
-| 結果状況 | `ls results/` |
-| セッション状態 | `./scripts/status.sh` |
-| PdM の状態 | `Ctrl+b 0` |
-| specialist の状態 | `Ctrl+b w` でウィンドウ選択 |
-| watcher ログ | `Ctrl+b 1` |
-| notifier ログ | `Ctrl+b 2` |
-
-### 正常動作の流れ
-
-1. PdM が `tasks/<agent>.md` を書く
-2. notifier が検知 → specialist セッション起動 → タスク送信（`<agent>.sent` 作成）
-3. specialist が `results/<agent>.md` に書く（`STATUS: COMPLETE`）
-4. watcher が検知 → PdM に `[SYSTEM]` 通知
-5. PdM が結果を読んで次のアクション or ユーザーに報告
-
-### 既知の制約
-
-- specialist が長時間プロセス（`node server.js` 等）を起動するとブロックされる
-- kiro-cli のコンテキストが長くなると応答が遅くなる
-- 再起動時、未送信タスクは自動再開される（意図した動作）
-
-## 再起動時の動作
-
-`start.sh` 再起動時、`tasks/` に未送信（`.sent` マークなし）のタスクが残っていれば自動的に再送します。これは前回の未完了タスクの再開として意図した動作です。
-
-完全にリセットしたい場合：
-```bash
-tmux kill-server
-rm -f tasks/*.md tasks/*.sent results/*.md results/*.notified results/*.mtime
-./scripts/start.sh
-```
-
-## デバッグ
-
-```bash
-# specialist の作業を覗く
-Ctrl+b w  # ウィンドウ一覧から選択
-Ctrl+b n  # 次のウィンドウへ
+bash ~/kiro-team/scripts/install.sh /path/to/your-project
 ```
 
 ## 設定変更
 
-`scripts/config.sh` で以下を変更できる：
+`kiro-team/scripts/config.sh` で変更できる：
 
 | 変数 | デフォルト | 説明 |
 |---|---|---|
 | POLL_INTERVAL | 5 | ポーリング間隔（秒） |
-| STARTUP_WAIT | 10 | kiro-cli 起動待ち（秒） |
-| PROMPT_TIMEOUT | 30 | プロンプト待ちタイムアウト（秒） |
-| PROMPT_PATTERN | `^>` | kiro-cli プロンプト検知パターン |
+| STARTUP_WAIT | 5 | kiro-cli 起動待ち（秒） |
+| PROMPT_TIMEOUT | 60 | プロンプト待ちタイムアウト（秒） |
+
+## デバッグ
+
+```bash
+Ctrl+b w  # ウィンドウ一覧から specialist を選択して確認
+```
+
+ログは `kiro-team/logs/session-*.log` に記録される。
+
+## 再起動時の動作
+
+再起動時、未送信タスクは自動再送される（意図した動作）。
+完全リセットしたい場合は `--clean` オプションを使う。
