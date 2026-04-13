@@ -70,13 +70,15 @@ ensure_session() {
 
 deliver_task() {
   local agent="$1"
-  local task_content="$2"
+  local task_file="$TASKS_DIR/${agent}.md"
   local pane
   pane=$(get_agent_pane "$agent")
   [ -z "$pane" ] && { echo "Warning: pane for $agent not found" >&2; return 1; }
-  tmux send-keys -t "$pane" "$task_content" Enter || { echo "Warning: failed to send to $agent" >&2; return 1; }
+  local abs_path
+  abs_path="$(cd "$(dirname "$task_file")" && pwd)/$(basename "$task_file")"
+  tmux send-keys -t "$pane" "次のタスクファイルを読んで実行してください: $abs_path" Enter || { echo "Warning: failed to send to $agent" >&2; return 1; }
   touch "$TASKS_DIR/${agent}.sent"
-  log "TASK_SENT    $agent  TASK_ID:$(grep "^TASK_ID:" "$TASKS_DIR/${agent}.md" 2>/dev/null | head -1 | awk '{print $2}')"
+  log "TASK_SENT    $agent  TASK_ID:$(grep "^TASK_ID:" "$task_file" 2>/dev/null | head -1 | awk '{print $2}')"
   echo "Delivered task to $agent"
 }
 
@@ -106,8 +108,7 @@ while true; do
     fi
 
     # タスク送信
-    task_content=$(cat "$task_file")
-    deliver_task "$agent" "$task_content"
+    deliver_task "$agent"
   done
 
   sleep "$POLL_INTERVAL"
