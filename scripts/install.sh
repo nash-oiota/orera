@@ -19,6 +19,7 @@ mkdir -p "$TARGET/.kiro/steering"
 cp "$SCRIPT_DIR"/*.sh "$TARGET/kiro-team/scripts/"
 cp "$SOURCE_DIR/.kiro/agents"/kiro-team-*.json "$TARGET/.kiro/agents/"
 cp "$SOURCE_DIR"/plans/TEMPLATE.md "$SOURCE_DIR"/plans/PROPOSAL_TEMPLATE.md "$TARGET/kiro-team/plans/"
+cp "$SOURCE_DIR"/scheduled-task.md "$TARGET/kiro-team/"
 cp "$SOURCE_DIR"/steering/*.md "$TARGET/.kiro/steering/"
 
 echo "✅ Installed to $TARGET"
