@@ -1,0 +1,1744 @@
+README.md
+# kiro-team
+
+tmux + kiro-cli で動く「**案件 (initiative) ごとの自律エージェントチーム**」フレームワーク。
+1案件 = 1 worktree = 1 tmux セッション = 1 チーム (PdM + specialists) で並列実行する。
+
+## コンセプト
+
+- **案件単位の独立**: 1案件1 worktree。同一リポで複数案件を干渉なく並走できる
+- **横断リポジトリ対応**: 複数リポジトリを横断する案件も1セッションで管理できる
+- **グローバル chief**: `kiro-chief` が全プロジェクト・全案件を横断監視する
+- **一括起動/停止**: `projects.conf` に案件を定義して `--all` で一括操作
+- **ファイルベース通信**: tasks/<role>.md → results/<role>.md でタスク配送と結果回収
+- **自律運用 (任意)**: 30分間隔の ping で PdM を自発的に駆動 (`--no-ping` で無効化可能)
+- **テンプレ駆動**: 汎用ロールテンプレを `{team}` プレースホルダーで案件名に展開
+
+## 必要なもの
+
+- tmux
+- kiro-cli
+- git (worktree 対応)
+
+## 提供するロールテンプレ
+
+`agents/templates/` に汎用テンプレを用意。`{team}` を案件名で置換して各案件のエージェント定義を生成する。
+
+### コア (`--roles` 既定)
+| ロール | 役割 |
+|---|---|
+| **pdm** | 案件司令塔。タスク分解・委譲・統合 |
+| **frontend** | UI/クライアント実装 |
+| **backend** | API/サーバー実装 |
+| **qa** | 品質保証・テスト |
+| **reviewer** | 多次元コードレビュー (security/performance/architecture/testing/a11y) |
+
+### 任意 (`--roles` で指定)
+| ロール | 役割 |
+|---|---|
+| **release** | Git 操作・マージ・デプロイ調整 |
+| **debugger** | 仮説駆動デバッグ (1仮説を担当して証拠収集) |
+| **researcher** | コードベース・先行事例調査 (実装はしない) |
+| **architect** | 設計選択肢評価・ADR 作成 |
+| **designer** | UI/UX 仕様作成 |
+| **data** | データ分析・スキーマ設計・マイグレーション |
+| **security** | セキュリティ深掘りレビュー |
+| **docs** | 技術文書・README・ADR・runbook |
+
+加えて、全プロジェクト横断の司令塔として **chief-pdm** が1つ自動生成される (`~/.kiro/agents/chief-pdm.json`)。
+
+### プロジェクト固有ロール
+
+`<project>/.kiro/agent-templates/team-<role>.json` を置くと汎用テンプレより優先される。
+プロジェクト固有のロール (例: educator / marketer) はここに置く。
+
+## ディレクトリ構造
+
+### フレームワーク (`~/kiro-team/`)
+```
+~/kiro-team/
+├── README.md
+├── projects.conf             # 全プロジェクト・全案件の定義
+├── projects.conf.example     # サンプル
+├── agents/templates/         # 汎用ロールテンプレ
+├── scripts/
+│   ├── install.sh            # プロジェクトに導入 (薄いシム生成)
+│   ├── setup-teams.sh        # 案件起動 (汎用本体)
+│   ├── setup-multi.sh        # 横断リポジトリ案件起動
+│   ├── stop-teams.sh         # 停止 (汎用本体)
+│   ├── team-notifier.sh      # 案件単位 notifier (タスク配送・自律ping)
+│   └── chief-notifier.sh     # グローバル notifier (全プロジェクト監視)
+└── steering/                 # ブランチ戦略・施策管理ルール (任意参照)
+```
+
+### プロジェクト側 (`<project>/`)
+```
+<project>/
+├── kiro-team/
+│   ├── scripts/
+│   │   ├── setup.sh          # ~/kiro-team/scripts/setup-teams.sh への shim
+│   │   ├── setup-multi.sh    # ~/kiro-team/scripts/setup-multi.sh への shim
+│   │   └── stop.sh           # ~/kiro-team/scripts/stop-teams.sh への shim
+│   ├── plans/                # 施策計画
+│   └── teams/<initiative>/   # 案件ごとの tasks/, results/, plans/ (自動作成)
+└── .kiro/
+    ├── agents/               # 案件 PdM/specialists 定義 (自動生成)
+    │   └── <initiative>-<role>.json
+    └── agent-templates/      # プロジェクト固有テンプレ override (任意)
+```
+
+### 横断リポジトリ案件 (`setup-multi.sh` 使用時)
+```
+~/projects/your-modernization/          # セッションの作業場
+├── your-app-modernization/             # worktree (your-app の feature/modernization-main)
+├── your-deploy-modernization/          # worktree (your-deploy の feature/modernization-main)
+└── kiro-team/teams/modernization/       # tasks/, results/, plans/
+```
+
+## 導入
+
+```bash
+# 1. ライブラリを取得 (一度だけ)
+git clone <repo> ~/kiro-team
+
+# 2. projects.conf を作成
+cp ~/kiro-team/projects.conf.example ~/kiro-team/projects.conf
+# 編集して案件を定義
+
+# 3. 各プロジェクトに導入 (シム + ディレクトリを生成)
+~/kiro-team/scripts/install.sh ~/projects/myproject
+```
+
+ライブラリの場所は `KIRO_TEAM_HOME` 環境変数で上書き可能 (デフォルト `$HOME/kiro-team`)。
+
+## 使い方
+
+### 一括起動/停止 (推奨)
+
+```bash
+# projects.conf に定義した全案件を一括起動
+~/kiro-team/scripts/setup-teams.sh --all
+~/kiro-team/scripts/setup-teams.sh --all --no-ping   # 自律ping 無効
+
+# 全停止
+~/kiro-team/scripts/stop-teams.sh --all
+
+# 全停止 + worktree 削除
+~/kiro-team/scripts/stop-teams.sh --all --clean
+```
+
+### 個別起動
+
+```bash
+cd ~/projects/myproject
+
+# 単一リポ案件
+./kiro-team/scripts/setup.sh blog content-main
+./kiro-team/scripts/setup.sh api-rewrite api-rewrite-main \
+  --roles pdm,backend,qa,reviewer,architect --no-ping
+
+# 横断リポジトリ案件
+./kiro-team/scripts/setup-multi.sh modernization mod-main \
+  --repos your-app,your-deploy --roles pdm,backend,qa,reviewer,architect
+
+# 停止
+./kiro-team/scripts/stop.sh             # 全案件停止 (worktree 残す)
+./kiro-team/scripts/stop.sh blog        # 1案件のみ
+./kiro-team/scripts/stop.sh blog --clean  # 1案件停止 + worktree 削除
+./kiro-team/scripts/stop.sh chief       # グローバル chief のみ停止
+```
+
+### セッションに接続
+
+```bash
+tmux attach -t kiro-chief                    # グローバル chief PdM
+tmux attach -t kiro-myproject-blog           # 案件 PdM
+```
+
+### `projects.conf` 形式
+
+```
+# project:initiative:branch:roles[:repos]
+your-app:redis-to-valkey:redis_to_valkey:pdm,frontend,backend,qa,reviewer
+your-modernization:modernization:mod-main:pdm,backend,qa,reviewer,architect:your-app,your-deploy
+```
+
+`repos` を指定すると横断リポジトリ案件として `setup-multi.sh` が呼ばれる。
+
+## 案件のライフサイクル
+
+```
+1. ユーザー → chief-pdm: 案件を相談、KPI と方針を合意
+2. projects.conf に案件を追加
+3. ~/kiro-team/scripts/setup-teams.sh --all で起動
+4. chief-pdm or ユーザー: tasks/<init>-pdm.md にブリーフを書く
+5. 案件 PdM: 受信 → タスク分解 → tasks/<init>-<role>.md に specialists 用タスク投入
+6. team-notifier: tasks/ を検知 → specialist の tmux ペインに配送
+7. specialist: 実行 → results/<init>-<role>.md に結果書き込み
+8. team-notifier: results/ を検知 → 案件 PdM に [SYSTEM] 通知
+9. 案件 PdM: 結果統合 → results/<init>-pdm.md を更新
+10. chief-pdm: 全プロジェクトの results/ を見て横断調整 + ユーザー報告
+11. クローズ: stop.sh <init> --clean
+```
+
+## 通信プロトコル
+
+### タスクファイル (`kiro-team/teams/<initiative>/tasks/<initiative>-<role>.md`)
+```
+TASK_ID: <unique-id>
+OWNER: <initiative>-<role>
+DEPENDS_ON: <other-task-ids or none>
+FILE_OWNERSHIP: <files this task can modify>
+---
+## Goal
+<what to achieve>
+
+## Acceptance Criteria
+<concrete, verifiable conditions>
+```
+
+### 結果ファイル (`kiro-team/teams/<initiative>/results/<initiative>-<role>.md`)
+```
+TASK_ID: <id>
+STATUS: COMPLETE | BLOCKED | QUESTION | APPROVED | CHANGES_REQUESTED | PASSED | FAILED
+---
+<content>
+```
+
+## 設定
+
+### `setup-teams.sh` / `setup-multi.sh` のオプション
+| フラグ | 説明 |
+|---|---|
+| `--roles <list>` | 使用ロール (default: pdm,frontend,backend,qa,reviewer) |
+| `--no-ping` | 案件 PdM の定期 ping を無効化 |
+| `--all` | `~/kiro-team/projects.conf` を読んで全案件起動 |
+| `--repos <list>` | 横断リポジトリ名 (setup-multi.sh / --all 時) |
+
+### `stop-teams.sh` のオプション
+| フラグ | 説明 |
+|---|---|
+| `--all` | `~/kiro-team/projects.conf` を読んで全案件停止 |
+| `--clean` | セッション停止 + worktree 削除 |
+
+### 環境変数
+| 変数 | 説明 | デフォルト |
+|---|---|---|
+| `KIRO_TEAM_HOME` | ライブラリの場所 | `~/kiro-team` |
+| `KIRO_TEAM_PROJECTS_DIR` | プロジェクトのルートディレクトリ | `~/projects` |
+
+## トラブルシューティング
+
+### setup を再実行したらタスクが届かなくなった
+旧セッションの specialist `.pane_*` ファイルが残っているとエージェントペイン未作成のまま skip される。
+`stop.sh <initiative>` を打ってから setup し直す。
+
+### notifier が複数走っている
+`pgrep -af team-notifier` で確認。stop で全 kill されるが、強制終了で残った場合は手動で `pkill -f team-notifier`。
+
+### エージェント定義 not found エラー
+`tasks/<initiative>-<role>.md` のファイル名と `.kiro/agents/` 内のエージェント定義名が一致しているか確認。
+存在しないロールに対応するタスクを書いた場合は、`setup.sh` を `--roles ...` に当該ロールを含めて再実行する必要がある。
+
+### setup-multi.sh で repos not found エラー
+`--repos` に指定したリポジトリが `~/projects/` 配下に存在するか確認。
+`KIRO_TEAM_PROJECTS_DIR` で別のディレクトリを指定している場合はそちらを確認。
+
+
+
+
+
+agents/templates/chief-pdm.json
+{
+  "name": "chief-pdm",
+  "prompt": "You are the Chief PdM (経営参謀 / Head of Product) overseeing all projects and initiatives across ~/projects/.\n\n## IMPORTANT: Execution Constraints\n- NEVER start long-running processes (servers, watchers, daemons)\n- Only run quick, non-blocking commands\n\n## Your Role\n- ユーザーとの対話: 要件確認、進捗報告、判断を仰ぐ\n- 全プロジェクト・全案件の現状把握: KPI 進捗、ブロッカー、リソース需要\n- 方向性の提示: 案件の優先順位、停止判断、新規案件の立ち上げ\n- プロジェクト間・案件間調整: 依存関係の管理、コンフリクト仲裁\n- プロセス改善の提案\n\n## What You Do NOT Do\n- 個別タスクの分解・依頼 (各案件 PdM がやる)\n- 実装・テスト・レビュー (各案件のスペシャリストがやる)\n- 案件内のパイプライン制御 (案件 PdM 内で完結)\n\n## Monitoring All Projects\n各プロジェクトの案件状況は以下のパスで確認:\n- <project>/kiro-team/teams/<initiative>/plans/: 案件の方針と KPI\n- <project>/kiro-team/teams/<initiative>/tasks/<initiative>-pdm.md: 案件 PdM への指示\n- <project>/kiro-team/teams/<initiative>/results/<initiative>-pdm.md: 案件 PdM からの報告\n\n## Communication\n- ユーザーとは直接対話 (このセッションで)\n- 各案件 PdM とは tasks/results 経由で非同期に対話\n- 案件 PdM への新規指示: <project>/kiro-team/teams/<initiative>/tasks/<initiative>-pdm.md に書き込む\n- 案件 PdM からの報告: <project>/kiro-team/teams/<initiative>/results/<initiative>-pdm.md を読む\n\n## Initiative Lifecycle\n1. **Initiate**: ユーザーと案件名・ゴール・KPI を合意 → plans/ にブリーフを作成\n2. **Setup**: ユーザーが setup-teams.sh / setup-multi.sh で worktree + tmux セッション + 案件 PdM を起動\n3. **Brief**: tasks/<initiative>-pdm.md に方針・ゴール・KPI を書き込む (案件 PdM がそこから自走)\n4. **Monitor**: results/ を定期的に確認、BLOCKED/QUESTION があれば判断して tasks/ に応答\n5. **Close**: KPI 達成 or 中止判断時に案件をクローズ、stop-teams.sh で終了\n\n## Autonomous Operation\nchief-notifier が定期的にあなたに自律チェックを促します。その時:\n1. 全プロジェクト配下のアクティブ案件の results/<initiative>-pdm.md を読む\n2. BLOCKED や QUESTION が放置されていないか確認\n3. 各案件の KPI 進捗を確認\n4. 必要なら新規指示を tasks/ に書き込む\n5. ユーザー判断が必要なら、このセッションで提起する\n\n## Behavioral Traits\n- 案件 PdM の仕事に踏み込みすぎない (タスク分解は委譲する)\n- 判断を求められたら明確に答える ('保留' ではなく方針を示す)\n- プロジェクト間・案件間のリソース競合をユーザーに上げる前に整理して提示する\n- 過去の判断と整合性を保つ (同じ問いに違う答えを出さない)\n\n## Session Start\nセッション開始時:\n1. 全プロジェクト配下の kiro-team/teams/ を走査してアクティブ案件を列挙\n2. 各案件の results/<initiative>-pdm.md の最新行を確認\n3. 全体サマリをユーザーに報告 ('現在 N 件の案件が稼働中, X が BLOCKED, Y が COMPLETE 待ち' など)\n\n## Security\n- Never hardcode secrets or credentials in plans or task files",
+  "tools": [
+    "execute_bash",
+    "fs_write",
+    "fs_read"
+  ],
+  "allowedTools": [
+    "execute_bash",
+    "fs_write",
+    "fs_read"
+  ]
+}
+
+
+agents/templates/team-pdm.json
+{
+  "name": "{team}-pdm",
+  "prompt": "You are the PdM (Product Manager / 司令塔) of the {team} initiative team.\n\n## IMPORTANT: Execution Constraints\n- NEVER start long-running processes (servers, watchers, daemons)\n- Only run quick, non-blocking commands\n\n## Your Role\n- 案件 ({team}) のゴール・KPI を理解し、実現するためのタスク分解とアサインを行う\n- 各スペシャリスト ({team}-frontend / {team}-backend / {team}-qa / {team}-reviewer など) にタスクを委譲する\n- 進捗をモニタリングし、ブロッカーを解消する\n- 完了したタスクの結果を統合し、次のアクションを決める\n- chief-pdm からの問い合わせに応答し、上位の判断が必要な事項をエスカレーションする\n\n## What You Do NOT Do\n- 自分でコードを書かない（実装は specialists に委譲）\n- 自分でテストを実行しない（QA に委譲）\n- 自分でレビューしない（reviewer に委譲）\n- 案件外のタスクには手を出さない（scope 厳守）\n\n## Communication Protocol\n\n### Receiving Tasks (from chief-pdm or user)\n- 案件の方針・ゴールが kiro-team/teams/{team}/tasks/{team}-pdm.md に書かれる\n- セッション開始時およびこのファイルが更新された時、内容を読んで実行計画に変換する\n## Session Start\nWhen you start a new session, immediately:\n1. Read all files in `kiro-team/teams/{team}/tasks/` to understand what has been delegated\n2. Read all files in `kiro-team/teams/{team}/results/` to understand what has been completed\n3. Read all files in `kiro-team/teams/{team}/plans/` to understand initiative progress\n4. Identify any pending work (tasks without corresponding COMPLETE results)\n5. Briefly summarize the current state to the user and ask how to proceed\n\nDo NOT automatically re-execute tasks. Always confirm with the user before resuming work.\n\n\n### Reporting to chief-pdm\nWrite to kiro-team/teams/{team}/results/{team}-pdm.md:\n```\nTASK_ID: <id>\nSTATUS: IN_PROGRESS | BLOCKED | COMPLETE\n---\n<content>\n```\n\n### Delegating to specialists\nFor each specialist task, write to kiro-team/teams/{team}/tasks/{team}-<role>.md with:\n```\nTASK_ID: <unique-id>\nOWNER: {team}-<role>\nDEPENDS_ON: <other-task-ids or none>\nFILE_OWNERSHIP: <files this task can modify>\n---\n## Goal\n<what to achieve>\n\n## Acceptance Criteria\n<concrete, verifiable conditions>\n\n## Context\n<links to plans, designs, related decisions>\n```\nThe team-notifier will deliver these to the assigned specialist.\n\n### Receiving results from specialists\nWhen [SYSTEM] notifies you that a specialist updated results:\n1. Read kiro-team/teams/{team}/results/<role>.md\n2. If STATUS is QUESTION or BLOCKED, decide and respond by updating their tasks/ file\n3. If STATUS is COMPLETE, mark the task done and decide next action\n\n## Task Decomposition Rules\n1. **One owner per file** — Never assign the same file to multiple specialists in parallel. If a file must be touched by multiple roles, sequence the tasks via DEPENDS_ON.\n2. **Explicit boundaries** — List FILE_OWNERSHIP in every task description.\n3. **Interface contracts first** — When two tasks share a boundary, define types/APIs/contracts before delegating.\n4. **Concrete acceptance criteria** — Vague criteria produce vague results. Define what 'done' looks like.\n5. **Minimize dependency depth** — Maximize parallelism by keeping the dependency chain short.\n\n\n## Plan File Management\nAll work MUST be tracked in a plan file. NEVER delegate tasks without one.\n\n1. **Before starting any initiative**: Create a plan file at `kiro-team/teams/{team}/plans/<initiative-name>.md` by copying `kiro-team/plans/TEMPLATE.md`\n2. **Update status on every delegation**: ⏸ 待機中 → 🔄 進行中\n3. **Update status on every completion**: 🔄 進行中 → ✅ 完了\n4. **Proposals**: Specialists may propose new initiatives using `kiro-team/plans/PROPOSAL_TEMPLATE.md`. Convert proposals to execution plans before starting work.\n\n## Lifecycle Protocol\n1. **Plan** — Read incoming brief, create plan file, decompose into tasks with file ownership and dependencies\n2. **Delegate** — Write task files to kiro-team/teams/{team}/tasks/<role>.md, update plan status to 🔄\n3. **Monitor** — Wait for [SYSTEM] notifications when results land; check progress at milestones, not constantly\n4. **Resolve** — When BLOCKED or QUESTION arrives, decide and respond promptly\n5. **Integrate** — When all tasks COMPLETE, verify integration, update plan to ✅, update chief-pdm\n6. **Report** — Update kiro-team/teams/{team}/results/{team}-pdm.md with consolidated status\n\n## Autonomous Operation\nThe team-notifier will ping you periodically with autonomous-check prompts. When this happens:\n1. Review current task status across all specialists\n2. If a specialist is idle and has a next task ready, delegate it\n3. If all tasks are complete and the case isn't closed, plan next iteration\n4. If genuinely waiting on external input, report '待機中: <reason>' to chief-pdm\n\n## Review Flow\nWhen frontend AND backend have both completed their tasks (STATUS: COMPLETE):\n1. Delegate a review task to `{team}-reviewer` with both results files referenced\n2. Wait for reviewer's response (STATUS: APPROVED or CHANGES_REQUESTED)\n3. If APPROVED: proceed to {team}-qa for testing, then report to user\n4. If CHANGES_REQUESTED: delegate fix tasks to the relevant specialists, then re-request review\n\nDo NOT skip the review step. Always wait for reviewer APPROVED before proceeding to qa.\n\n## Behavioral Traits\n- Decomposes before delegating — never assigns vague or overlapping tasks\n- Defines acceptance criteria upfront — knows what 'done' looks like before starting\n- Monitors at milestones, not every step — avoids micromanaging\n- Escalates blockers promptly — does not let specialists spin\n- Synthesizes results with clear attribution\n- Keeps teams small and ownership clear — bias toward fewer concurrent tasks with clear boundaries\n\n## Security\n- Never hardcode secrets or credentials in task files",
+  "tools": [
+    "execute_bash",
+    "fs_write",
+    "fs_read"
+  ],
+  "allowedTools": [
+    "execute_bash",
+    "fs_write",
+    "fs_read"
+  ],
+  "resources": [
+    "file://~/kiro-team/steering/branch-strategy.md",
+    "file://~/kiro-team/steering/initiative-management.md"
+  ]
+}
+
+
+
+agents/templates/team-reviewer.json
+{
+  "name": "{team}-reviewer",
+  "prompt": "You are a Code Reviewer in the {team} initiative team. You perform multi-dimensional code review and produce structured findings.\n\n## IMPORTANT: Execution Constraints\n- NEVER start long-running processes\n- Only run quick, non-blocking commands\n\n## Receiving Tasks\nRead kiro-team/teams/{team}/tasks/{team}-reviewer.md and execute the review. The task may specify which dimensions to focus on (e.g., DIMENSIONS: security,performance) or default to all.\n\n## Reporting Results\nWrite to kiro-team/teams/{team}/results/{team}-reviewer.md:\n```\nTASK_ID: <id>\nSTATUS: APPROVED | CHANGES_REQUESTED\n---\n<findings>\n```\n\n## Review Dimensions\n\n### Security\n- Input validation and sanitization\n- AuthN/AuthZ checks\n- Injection (SQL, XSS, command, path traversal)\n- Secrets/credential exposure\n- Insecure cryptography or randomness\n- Dependency vulnerabilities\n\n### Performance\n- N+1 queries, missing indexes, full scans\n- Redundant computation, missing caches\n- Memory leaks, unclosed resources\n- Async/concurrency correctness\n- Algorithm complexity (time/space)\n- Bundle size, lazy loading opportunities\n\n### Architecture\n- Separation of concerns and layer boundaries\n- SOLID principle adherence\n- Dependency direction (no upward leaks)\n- API contract design and versioning: Do frontend requests match backend expectations? (field names, data types, endpoints)\n- Error handling consistency: Are errors from backend properly handled in frontend?\n- Data flow correctness: Does data flow correctly end-to-end?\n- Naming consistency across frontend and backend\n- Over- or under-abstraction\n\n### Testing\n- Coverage of critical paths and edge cases\n- Test isolation and determinism\n- Appropriate use of mocks/stubs\n- Assertion specificity\n- Test naming and maintainability\n\n### Accessibility (frontend)\n- Semantic HTML and ARIA usage\n- Keyboard navigation\n- Screen reader compatibility\n- Color contrast (WCAG 2.1 AA)\n- Focus management\n- Alt text for media\n\n## Output Format\nFor each finding:\n```\n### [SEVERITY] Finding Title\n\n**Location**: `path/to/file.ts:42`\n**Dimension**: Security | Performance | Architecture | Testing | Accessibility\n**Severity**: Critical | High | Medium | Low\n\n**Evidence**:\n<what was found, with code snippet if relevant>\n\n**Impact**:\n<what could go wrong>\n\n**Recommended Fix**:\n<specific, actionable remediation>\n```\n\n## Decision Rules\n- **CHANGES_REQUESTED** if any Critical or High severity finding exists\n- **APPROVED** otherwise (Medium/Low findings noted but non-blocking)\n- Always verify build / type-check / tests pass before APPROVED\n\n## Behavioral Traits\n- Cites specific file:line for every finding\n- Evidence-based severity, not opinion-based\n- Suggests concrete fixes, not vague gestures\n- Distinguishes confirmed issues from potential concerns\n- Reports 'no findings' honestly rather than inflating results\n- Avoids false positives by verifying context before reporting\n- Stays within assigned dimensions; does not stray\n\n## Security\n- Never hardcode secrets or credentials in review notes",
+  "tools": [
+    "execute_bash",
+    "fs_write",
+    "fs_read"
+  ],
+  "allowedTools": [
+    "execute_bash",
+    "fs_write",
+    "fs_read"
+  ]
+}
+
+
+plans/TEMPLATE.md
+# [施策名]
+作成日: YYYY-MM-DD
+ステータス: 進行中 | 完了 | 保留
+
+## 課題
+この施策で解決したい問題・背景（1〜2行）
+
+## 目的
+この施策で達成したいこと（1〜2行）
+
+## タスク一覧
+
+| # | タスク | 担当 | ステータス |
+|---|---|---|---|
+| 1 | xxx | {team}-backend | ⏸ 待機中 |
+| 2 | xxx | {team}-frontend | ⏸ 待機中 |
+| 3 | xxx | {team}-reviewer | ⏸ 待機中 |
+| 4 | xxx | {team}-qa | ⏸ 待機中 |
+
+## 完了条件（DoD）
+- [ ] {team}-reviewer APPROVED
+- [ ] {team}-qa 全テスト PASS
+
+
+
+scripts/install.sh
+#!/bin/bash
+# install.sh - kiro-team を指定プロジェクトにインストール (薄いシムを生成)
+#
+# 設計:
+#   ~/kiro-team はライブラリ (単一ソース)。プロジェクト側はシム + 設定のみ持つ。
+#   ~/kiro-team を更新するだけで全プロジェクトに反映される。
+#
+# Usage:
+#   ./install.sh <project-root>
+# Example:
+#   ~/kiro-team/scripts/install.sh ~/Desktop/projects/myproject
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIRO_TEAM_DIR="$(dirname "$SCRIPT_DIR")"
+TARGET="${1:?Usage: $0 <project-root>}"
+
+if [ ! -d "$TARGET" ]; then
+  echo "Error: $TARGET does not exist"
+  exit 1
+fi
+
+echo "Installing kiro-team into: $TARGET"
+echo "Library source: $KIRO_TEAM_DIR"
+echo ""
+
+# ---- Directory structure ----
+mkdir -p "$TARGET/kiro-team/scripts"
+mkdir -p "$TARGET/kiro-team/plans"
+mkdir -p "$TARGET/kiro-team/teams"
+mkdir -p "$TARGET/.kiro/agents"
+mkdir -p "$TARGET/.kiro/agent-templates"
+
+# ---- Project shim: setup.sh ----
+cat > "$TARGET/kiro-team/scripts/setup.sh" <<'SHIM'
+#!/bin/bash
+# Thin shim — calls ~/kiro-team/scripts/setup-teams.sh with project root auto-resolved.
+# Override library location with KIRO_TEAM_HOME env var if needed.
+set -e
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+KIRO_TEAM_HOME="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+exec "${KIRO_TEAM_HOME}/scripts/setup-teams.sh" "$PROJECT_ROOT" "$@"
+SHIM
+chmod +x "$TARGET/kiro-team/scripts/setup.sh"
+echo "  [created] kiro-team/scripts/setup.sh"
+
+# ---- Project shim: setup-multi.sh ----
+cat > "$TARGET/kiro-team/scripts/setup-multi.sh" <<'SHIM'
+#!/bin/bash
+# Thin shim — calls ~/kiro-team/scripts/setup-multi.sh with project root auto-resolved.
+set -e
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+KIRO_TEAM_HOME="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+exec "${KIRO_TEAM_HOME}/scripts/setup-multi.sh" "$PROJECT_ROOT" "$@"
+SHIM
+chmod +x "$TARGET/kiro-team/scripts/setup-multi.sh"
+echo "  [created] kiro-team/scripts/setup-multi.sh"
+
+# ---- Project shim: stop.sh ----
+cat > "$TARGET/kiro-team/scripts/stop.sh" <<'SHIM'
+#!/bin/bash
+# Thin shim — calls ~/kiro-team/scripts/stop-teams.sh with project root auto-resolved.
+set -e
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+KIRO_TEAM_HOME="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+exec "${KIRO_TEAM_HOME}/scripts/stop-teams.sh" "$PROJECT_ROOT" "$@"
+SHIM
+chmod +x "$TARGET/kiro-team/scripts/stop.sh"
+echo "  [created] kiro-team/scripts/stop.sh"
+
+# ---- .gitkeep for empty dirs ----
+touch "$TARGET/kiro-team/plans/.gitkeep"
+touch "$TARGET/kiro-team/teams/.gitkeep"
+touch "$TARGET/.kiro/agents/.gitkeep"
+touch "$TARGET/.kiro/agent-templates/.gitkeep"
+
+# ---- README hint ----
+cat > "$TARGET/kiro-team/README.md" <<README
+# kiro-team (this project)
+
+This project uses [kiro-team](file://${KIRO_TEAM_DIR}) as its multi-agent autonomous development library.
+
+## Structure
+
+\`\`\`
+kiro-team/
+├── scripts/
+│   ├── setup.sh        # 案件立ち上げ (~/kiro-team/scripts/setup-teams.sh への shim)
+│   └── stop.sh         # 案件停止
+├── plans/              # 施策の plan ファイル
+├── teams/<initiative>/ # 案件ごとの tasks/, results/, plans/
+└── teams.conf          # --all 用の案件定義 (任意)
+
+.kiro/
+├── agents/             # 案件ごとに自動生成される PdM/specialist 定義
+└── agent-templates/    # プロジェクト固有のテンプレ override (任意)
+\`\`\`
+
+## Quick start
+
+\`\`\`bash
+# 案件1つ立ち上げ
+./kiro-team/scripts/setup.sh <initiative> <branch> [--roles ...] [--no-ping]
+
+# 横断リポジトリ案件
+./kiro-team/scripts/setup-multi.sh <initiative> <branch> --repos repo1,repo2 [--roles ...]
+
+# ~/kiro-team/projects.conf に書いた全案件を立ち上げ
+~/kiro-team/scripts/setup-teams.sh --all
+
+# 全停止
+./kiro-team/scripts/stop.sh
+\`\`\`
+
+## Project-specific roles
+
+\`.kiro/agent-templates/team-<role>.json\` を置くと、汎用テンプレより優先して使われます。
+プロジェクト固有のロール (例: educator, marketer) はここに置いてください。
+README
+
+echo "  [created] kiro-team/README.md"
+
+echo ""
+echo "✅ Installed."
+echo ""
+echo "Next steps:"
+echo "  1. cd $TARGET"
+echo "  2. (optional) cp kiro-team/teams.conf.example kiro-team/teams.conf && \$EDITOR kiro-team/teams.conf"
+echo "  3. ./kiro-team/scripts/setup.sh <initiative> <branch>      # 個別案件起動"
+echo "     or"
+echo "     ./kiro-team/scripts/setup.sh --all                       # teams.conf 全起動"
+
+
+
+scripts/setup-teams.sh
+#!/bin/bash
+# setup-teams.sh - 案件 (initiative) ごとに worktree + tmux セッション + agent 定義を起動
+#
+# Usage:
+#   setup-teams.sh [project-root] <initiative> <branch> [options]
+#   setup-teams.sh [project-root] --all [options]
+#
+# project-root を省略すると pwd / git toplevel を使用。
+#
+# Options:
+#   --roles role1,role2,...  使用するロール (default: pdm,frontend,backend,qa,reviewer)
+#   --no-ping                案件PdMへの定期自律ping (30分毎) を無効化
+#   --all                    <project>/kiro-team/teams.conf に書かれた全案件を起動
+#
+# Examples:
+#   setup-teams.sh ~/Desktop/projects/orera mobile-cv mobile-cv-main
+#   setup-teams.sh mobile-cv mobile-cv-main                    # project-root=pwd
+#   setup-teams.sh --all                                       # teams.conf 一括
+#   setup-teams.sh ~/Desktop/projects/orera --all --no-ping
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIRO_TEAM_DIR="$(dirname "$SCRIPT_DIR")"
+GENERIC_TEMPLATES_DIR="$KIRO_TEAM_DIR/agents/templates"
+
+usage() {
+  cat <<USAGE
+Usage:
+  $0 [project-root] <initiative> <branch> [options]
+  $0 [project-root] --all [options]
+
+project-root を省略すると pwd または git toplevel を使用。
+
+Options:
+  --roles <list>   ロール (default: pdm,frontend,backend,qa,reviewer)
+                   利用可能: pdm, frontend, backend, qa, reviewer, release,
+                            debugger, researcher, architect, designer,
+                            data, security, docs
+  --no-ping        定期自律ping (30分) を無効化
+  --all            <project-root>/kiro-team/teams.conf を読んで全案件を起動
+
+teams.conf 形式 (1行1案件):
+  <initiative>:<branch>[:<roles>]
+USAGE
+}
+
+# ---- Resolve project-root (first positional arg if it's a directory, else pwd/git) ----
+resolve_project_root() {
+  if [ "$#" -gt 0 ] && [ -d "$1" ]; then
+    echo "$1"
+    return 0
+  fi
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    git rev-parse --show-toplevel
+    return 0
+  fi
+  pwd
+}
+
+# ---- Argument parsing ----
+PROJECT_ROOT=""
+INITIATIVE=""
+BRANCH=""
+ALL_MODE=0
+ROLES="pdm,frontend,backend,qa,reviewer"
+PING_INTERVAL=1800
+
+# Detect project-root (first positional if it's a directory)
+if [ "$#" -gt 0 ] && [ -d "$1" ]; then
+  PROJECT_ROOT="$1"
+  shift
+fi
+
+# Remaining args
+POSITIONAL=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --all)
+      ALL_MODE=1
+      shift
+      ;;
+    --roles)
+      ROLES="$2"
+      shift 2
+      ;;
+    --no-ping)
+      PING_INTERVAL=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      usage
+      exit 1
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$PROJECT_ROOT" ]; then
+  PROJECT_ROOT="$(resolve_project_root)"
+fi
+
+if [ "$ALL_MODE" -eq 0 ]; then
+  if [ "${#POSITIONAL[@]}" -lt 2 ]; then
+    echo "Error: <initiative> and <branch> required (or use --all)"
+    usage
+    exit 1
+  fi
+  INITIATIVE="${POSITIONAL[0]}"
+  BRANCH="${POSITIONAL[1]}"
+fi
+
+PROJECT_NAME=$(basename "$PROJECT_ROOT")
+PROJECT_TEMPLATES_DIR="$PROJECT_ROOT/.kiro/agent-templates"
+PROJECTS_DIR="$(dirname "$PROJECT_ROOT")"
+# For --all mode: PROJECTS_DIR is ~/projects (sibling of kiro-team or explicit)
+GLOBAL_PROJECTS_DIR="${KIRO_TEAM_PROJECTS_DIR:-$HOME/projects}"
+SESSION_PREFIX="kiro-${PROJECT_NAME}"
+CHIEF_SESSION="kiro-chief"
+CHIEF_DIR="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+CHIEF_AGENTS_DIR="${HOME}/.kiro/agents"
+
+# ---- Template lookup: project override → generic ----
+resolve_template() {
+  local role="$1"
+  if [ -f "$PROJECT_TEMPLATES_DIR/team-${role}.json" ]; then
+    echo "$PROJECT_TEMPLATES_DIR/team-${role}.json"
+  elif [ -f "$GENERIC_TEMPLATES_DIR/team-${role}.json" ]; then
+    echo "$GENERIC_TEMPLATES_DIR/team-${role}.json"
+  else
+    return 1
+  fi
+}
+
+# ---- Start chief session if not running ----
+start_chief_if_needed() {
+  if tmux has-session -t "$CHIEF_SESSION" 2>/dev/null; then
+    echo "  [skip] $CHIEF_SESSION already running"
+    return 0
+  fi
+
+  # Generate chief-pdm.json in ~/.kiro/agents (global)
+  mkdir -p "$CHIEF_AGENTS_DIR"
+  if [ ! -f "${CHIEF_AGENTS_DIR}/chief-pdm.json" ]; then
+    local chief_template="$GENERIC_TEMPLATES_DIR/chief-pdm.json"
+    sed "s/{project}/global/g" "$chief_template" > "${CHIEF_AGENTS_DIR}/chief-pdm.json"
+    echo "  [created] ${CHIEF_AGENTS_DIR}/chief-pdm.json"
+  fi
+
+  tmux new-session -d -s "$CHIEF_SESSION" -c "$GLOBAL_PROJECTS_DIR"
+  tmux send-keys -t "$CHIEF_SESSION" "kiro-cli chat --agent chief-pdm" Enter
+  local CHIEF_LOG="${HOME}/.kiro/chief-notifier.log"
+  nohup "${SCRIPT_DIR}/chief-notifier.sh" "$GLOBAL_PROJECTS_DIR" \
+    > "$CHIEF_LOG" 2>&1 &
+  echo "  [started] $CHIEF_SESSION (chief-pdm + chief-notifier) @ $GLOBAL_PROJECTS_DIR"
+}
+
+# ---- Setup one initiative ----
+setup_one() {
+  local initiative="$1"
+  local branch="$2"
+  local roles="$3"
+  local ping_interval="$4"
+
+  local worktree_dir="${PROJECT_ROOT}/../${PROJECT_NAME}-${initiative}"
+  local session_name="${SESSION_PREFIX}-${initiative}"
+
+  echo ""
+  echo "=========================================="
+  echo "  Initiative: $initiative"
+  echo "  Branch: feature/${branch}"
+  echo "  Worktree: $worktree_dir"
+  echo "  Roles: $roles"
+  echo "  Ping: $([ "$ping_interval" = "0" ] && echo disabled || echo "${ping_interval}s")"
+  echo "=========================================="
+
+  # 1. Worktree
+  cd "$PROJECT_ROOT"
+  if [ -d "$worktree_dir" ]; then
+    echo "  [skip worktree] $worktree_dir already exists"
+  else
+    if ! git show-ref --verify --quiet "refs/heads/feature/${branch}"; then
+      local base_branch
+      if git rev-parse --verify develop >/dev/null 2>&1; then
+        base_branch=develop
+      else
+        base_branch=$(git rev-parse --abbrev-ref HEAD)
+      fi
+      git branch "feature/${branch}" "$base_branch"
+      echo "  [branch created] feature/${branch} from $base_branch"
+    fi
+    git worktree add "$worktree_dir" "feature/${branch}"
+    echo "  [worktree created] $worktree_dir"
+  fi
+
+  # 2. Agent definitions
+  local agents_dir="${worktree_dir}/.kiro/agents"
+  mkdir -p "$agents_dir"
+  IFS=',' read -ra role_arr <<< "$roles"
+  for role in "${role_arr[@]}"; do
+    local template
+    if ! template=$(resolve_template "$role"); then
+      echo "  [error] template not found for role: $role"
+      echo "         Searched: $PROJECT_TEMPLATES_DIR, $GENERIC_TEMPLATES_DIR"
+      return 1
+    fi
+    local target="${agents_dir}/${initiative}-${role}.json"
+    if [ -f "$target" ]; then
+      echo "  [skip agent] ${initiative}-${role}.json"
+    else
+      sed "s/{team}/${initiative}/g" "$template" > "$target"
+      echo "  [agent created] ${initiative}-${role}.json (from $(basename $(dirname $template))/$(basename $template))"
+    fi
+  done
+
+  # 3. Tasks/results dirs
+  local tasks_dir="${worktree_dir}/kiro-team/teams/${initiative}/tasks"
+  local results_dir="${worktree_dir}/kiro-team/teams/${initiative}/results"
+  local plans_dir="${worktree_dir}/kiro-team/teams/${initiative}/plans"
+  mkdir -p "$tasks_dir" "$results_dir" "$plans_dir"
+
+  # 4. npm install
+  if [ -f "$worktree_dir/package.json" ] && [ ! -d "$worktree_dir/node_modules" ]; then
+    echo "  [npm install] $worktree_dir"
+    (cd "$worktree_dir" && npm install --silent)
+  fi
+
+  # 5. Initiative session
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    echo "  [skip session] $session_name already running"
+  else
+    tmux new-session -d -s "$session_name" -c "$worktree_dir"
+    local pdm_pane
+    pdm_pane=$(tmux list-panes -t "$session_name" -F "#{pane_id}" | head -1)
+    echo "$pdm_pane" > "${tasks_dir}/.pane_${initiative}-pdm"
+    tmux send-keys -t "$session_name" "kiro-cli chat --agent ${initiative}-pdm" Enter
+
+    local notifier_log="${tasks_dir}/.notifier.log"
+    nohup "${SCRIPT_DIR}/team-notifier.sh" "$initiative" "$worktree_dir" "$ping_interval" \
+      > "$notifier_log" 2>&1 &
+    echo "  [session started] $session_name (log: $notifier_log)"
+  fi
+}
+
+# ---- Header ----
+echo "=== Project: $PROJECT_NAME ($PROJECT_ROOT) ==="
+if [ "$ALL_MODE" -eq 1 ]; then
+  echo "=== Mode: --all (read projects.conf or teams.conf) ==="
+else
+  echo "=== Mode: single initiative ==="
+fi
+echo ""
+
+# ---- Chief session ----
+echo "=== Chief session ==="
+start_chief_if_needed
+
+# ---- Run setup ----
+if [ "$ALL_MODE" -eq 1 ]; then
+  # ~/kiro-team/projects.conf からグローバル定義を読む
+  GLOBAL_CONF="${KIRO_TEAM_DIR}/projects.conf"
+
+  if [ ! -f "$GLOBAL_CONF" ]; then
+    echo ""
+    echo "Error: projects.conf not found at $GLOBAL_CONF"
+    echo "Hint: cp ${KIRO_TEAM_DIR}/projects.conf.example $GLOBAL_CONF and edit"
+    exit 1
+  fi
+
+  CONF="$GLOBAL_CONF"
+  echo "Using: $CONF"
+
+  count=0
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="$(echo "$line" | xargs)"
+    [ -z "$line" ] && continue
+
+    IFS=':' read -r conf_project conf_init conf_branch conf_roles conf_repos <<< "$line"
+
+    [ -z "$conf_project" ] || [ -z "$conf_init" ] || [ -z "$conf_branch" ] && {
+      echo "  [warn] skipping invalid line: $line"
+      continue
+    }
+    conf_roles="${conf_roles:-$ROLES}"
+    conf_project_root="${GLOBAL_PROJECTS_DIR}/${conf_project}"
+
+    if [ -n "$conf_repos" ]; then
+      "${SCRIPT_DIR}/setup-multi.sh" "$conf_project_root" "$conf_init" "$conf_branch" \
+        --repos "$conf_repos" --roles "$conf_roles" \
+        $([ "$PING_INTERVAL" = "0" ] && echo "--no-ping")
+    else
+      PROJECT_ROOT="$conf_project_root"
+      PROJECT_NAME=$(basename "$PROJECT_ROOT")
+      PROJECT_TEMPLATES_DIR="$PROJECT_ROOT/.kiro/agent-templates"
+      SESSION_PREFIX="kiro-${PROJECT_NAME}"
+      setup_one "$conf_init" "$conf_branch" "$conf_roles" "$PING_INTERVAL"
+    fi
+    count=$((count + 1))
+  done < "$CONF"
+
+  if [ "$count" -eq 0 ]; then
+    echo ""
+    echo "Warning: no initiatives found in $CONF"
+  fi
+else
+  setup_one "$INITIATIVE" "$BRANCH" "$ROLES" "$PING_INTERVAL"
+fi
+
+# ---- Done ----
+echo ""
+echo "=== Setup complete ==="
+echo "Attach:"
+echo "  tmux attach -t kiro-chief"
+if [ "$ALL_MODE" -eq 0 ]; then
+  echo "  tmux attach -t ${SESSION_PREFIX}-${INITIATIVE}"
+else
+  for sess in $(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^${SESSION_PREFIX}-" || true); do
+    echo "  tmux attach -t $sess"
+  done
+fi
+
+
+scripts/stop-teams.sh
+#!/bin/bash
+# stop-teams.sh - 指定プロジェクトの全 kiro セッション + notifier を停止 (汎用版)
+#
+# Usage:
+#   stop-teams.sh [project-root] [initiative] [--clean]
+#   stop-teams.sh --all [--clean]
+#
+# Examples:
+#   stop-teams.sh                              # pwd から全セッション停止
+#   stop-teams.sh blog                         # 1案件のみ停止
+#   stop-teams.sh blog --clean                 # 1案件停止 + worktree 削除
+#   stop-teams.sh --all                        # projects.conf の全案件を停止
+#   stop-teams.sh --all --clean                # projects.conf の全案件停止 + worktree 削除
+#   stop-teams.sh chief                        # chief のみ停止
+
+set +e
+
+resolve_project_root() {
+  if [ "$#" -gt 0 ] && [ -d "$1" ]; then
+    echo "$1"
+    return 0
+  fi
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    git rev-parse --show-toplevel
+    return 0
+  fi
+  pwd
+}
+
+PROJECT_ROOT=""
+INITIATIVE=""
+CLEAN=0
+ALL_MODE=0
+
+if [ "$#" -gt 0 ] && [ -d "$1" ]; then
+  PROJECT_ROOT="$1"
+  shift
+fi
+if [ -z "$PROJECT_ROOT" ]; then
+  PROJECT_ROOT="$(resolve_project_root)"
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --clean) CLEAN=1; shift ;;
+    --all)   ALL_MODE=1; shift ;;
+    *) INITIATIVE="$1"; shift ;;
+  esac
+done
+
+PROJECT_NAME=$(basename "$PROJECT_ROOT")
+SESSION_PREFIX="kiro-${PROJECT_NAME}"
+
+PROJECTS_DIR="$(dirname "$PROJECT_ROOT")"
+
+# Remove worktrees created by setup-multi.sh for a given initiative
+stop_multi_worktrees() {
+  local initiative="$1"
+  # Remove per-repo worktrees inside PROJECT_ROOT
+  for worktree_dir in "${PROJECT_ROOT}"/*-"${initiative}"; do
+    [ -d "$worktree_dir" ] || continue
+    local repo_name
+    repo_name="$(basename "$worktree_dir" | sed "s/-${initiative}$//")"
+    local repo_dir="${PROJECTS_DIR}/${repo_name}"
+    if [ -d "$repo_dir/.git" ]; then
+      (cd "$repo_dir" && git worktree remove --force "$worktree_dir" 2>/dev/null) && \
+        echo "  [removed worktree] $worktree_dir"
+    fi
+  done
+}
+
+stop_session_and_notifier() {
+  local session_name="$1"
+  local notifier_pattern="$2"  # pgrep pattern, e.g. "team-notifier.sh blog"
+  local pane_dir="$3"          # dir containing .pane_* and *.sent files
+
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    tmux kill-session -t "$session_name"
+    echo "  [stopped session] $session_name"
+  fi
+
+  if [ -n "$notifier_pattern" ]; then
+    pkill -f "$notifier_pattern" 2>/dev/null && \
+      echo "  [killed notifier] $notifier_pattern"
+  fi
+
+  if [ -n "$pane_dir" ] && [ -d "$pane_dir" ]; then
+    rm -f "$pane_dir/.pane_"* 2>/dev/null
+    rm -f "$pane_dir/"*.sent 2>/dev/null
+    rm -f "$pane_dir/"*.notified 2>/dev/null
+  fi
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIRO_TEAM_DIR="$(dirname "$SCRIPT_DIR")"
+GLOBAL_PROJECTS_DIR="${KIRO_TEAM_PROJECTS_DIR:-$HOME/projects}"
+
+echo "=== Stopping kiro sessions ==="
+
+# --all: read projects.conf and stop each project
+if [ "$ALL_MODE" -eq 1 ]; then
+  CONF="${KIRO_TEAM_DIR}/projects.conf"
+  if [ ! -f "$CONF" ]; then
+    echo "Error: projects.conf not found at $CONF"
+    exit 1
+  fi
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="$(echo "$line" | xargs)"
+    [ -z "$line" ] && continue
+    IFS=':' read -r conf_project conf_init _ <<< "$line"
+    [ -z "$conf_project" ] || [ -z "$conf_init" ] && continue
+    conf_project_root="${GLOBAL_PROJECTS_DIR}/${conf_project}"
+    PROJECT_ROOT="$conf_project_root"
+    PROJECT_NAME=$(basename "$PROJECT_ROOT")
+    SESSION_PREFIX="kiro-${PROJECT_NAME}"
+    PROJECTS_DIR="$(dirname "$PROJECT_ROOT")"
+    echo "--- $conf_project/$conf_init ---"
+    worktree="${PROJECT_ROOT}/../${PROJECT_NAME}-${conf_init}"
+    tasks_dir="$worktree/kiro-team/teams/${conf_init}/tasks"
+    results_dir="$worktree/kiro-team/teams/${conf_init}/results"
+    stop_session_and_notifier "${SESSION_PREFIX}-${conf_init}" "team-notifier.sh ${conf_init}" "$tasks_dir"
+    rm -f "$results_dir/"*.notified 2>/dev/null
+    if [ "$CLEAN" -eq 1 ]; then
+      [ -d "$worktree" ] && git -C "$PROJECT_ROOT" worktree remove --force "$worktree" 2>/dev/null && \
+        echo "  [removed worktree] $worktree"
+      stop_multi_worktrees "$conf_init"
+    fi
+  done < "$CONF"
+  # Stop global chief
+  stop_session_and_notifier "kiro-chief" "chief-notifier.sh" ""
+  echo ""
+  echo "=== Done ==="
+  exit 0
+fi
+
+echo "=== Stopping kiro sessions for: $PROJECT_NAME ==="
+
+if [ -n "$INITIATIVE" ]; then
+  if [ "$INITIATIVE" = "chief" ]; then
+    # Stop global chief session
+    stop_session_and_notifier "kiro-chief" "chief-notifier.sh" ""
+  else
+    # Stop only the specified initiative
+    worktree="${PROJECT_ROOT}/../${PROJECT_NAME}-${INITIATIVE}"
+    tasks_dir="$worktree/kiro-team/teams/${INITIATIVE}/tasks"
+    results_dir="$worktree/kiro-team/teams/${INITIATIVE}/results"
+    stop_session_and_notifier "${SESSION_PREFIX}-${INITIATIVE}" "team-notifier.sh ${INITIATIVE}" "$tasks_dir"
+    rm -f "$results_dir/"*.notified 2>/dev/null
+    # Clean up worktrees only if --clean
+    if [ "$CLEAN" -eq 1 ]; then
+      # Single-repo worktree
+      [ -d "$worktree" ] && git -C "$PROJECT_ROOT" worktree remove --force "$worktree" 2>/dev/null && \
+        echo "  [removed worktree] $worktree"
+      # Multi-repo worktrees
+      stop_multi_worktrees "$INITIATIVE"
+    fi
+  fi
+else
+  # Stop all initiatives + chief
+  for sess in $(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^${SESSION_PREFIX}-"); do
+    init=$(echo "$sess" | sed "s/^${SESSION_PREFIX}-//")
+    if [ "$init" = "chief" ]; then
+      stop_session_and_notifier "kiro-chief" "chief-notifier.sh" ""
+    else
+      worktree="${PROJECT_ROOT}/../${PROJECT_NAME}-${init}"
+      tasks_dir="$worktree/kiro-team/teams/${init}/tasks"
+      results_dir="$worktree/kiro-team/teams/${init}/results"
+      stop_session_and_notifier "$sess" "team-notifier.sh ${init}" "$tasks_dir"
+      rm -f "$results_dir/"*.notified 2>/dev/null
+      if [ "$CLEAN" -eq 1 ]; then
+        [ -d "$worktree" ] && git -C "$PROJECT_ROOT" worktree remove --force "$worktree" 2>/dev/null && \
+          echo "  [removed worktree] $worktree"
+        stop_multi_worktrees "$init"
+      fi
+    fi
+  done
+fi
+
+echo ""
+echo "=== Done ==="
+
+
+scripts/setup-multi.sh
+#!/bin/bash
+# setup-multi.sh - 複数リポジトリを横断する案件のセットアップ
+#
+# 各リポジトリに feature/<branch> worktree を作成し、
+# メタディレクトリ (<project>-<initiative>/) にシンボリックリンクをまとめる。
+#
+# Usage:
+#   setup-multi.sh [project-root] <initiative> <branch> --repos repo1,repo2,... [options]
+#
+# Options:
+#   --repos <list>   横断するリポジトリ名 (~/projects/ 配下のディレクトリ名)
+#   --roles <list>   使用するロール (default: pdm,frontend,backend,qa,reviewer)
+#   --no-ping        定期自律ping を無効化
+#
+# Example:
+#   setup-multi.sh ~/projects/your-modernization modernization mod-main \
+#     --repos your-app,your-deploy --roles pdm,backend,infra,qa,reviewer
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIRO_TEAM_DIR="$(dirname "$SCRIPT_DIR")"
+GENERIC_TEMPLATES_DIR="$KIRO_TEAM_DIR/agents/templates"
+
+usage() {
+  cat <<USAGE
+Usage:
+  $0 [project-root] <initiative> <branch> --repos repo1,repo2,... [options]
+
+Options:
+  --repos <list>   横断するリポジトリ名 (project-root の親ディレクトリ配下)
+  --roles <list>   ロール (default: pdm,frontend,backend,qa,reviewer)
+  --no-ping        定期自律ping を無効化
+USAGE
+}
+
+resolve_project_root() {
+  if [ "$#" -gt 0 ] && [ -d "$1" ]; then
+    echo "$1"; return 0
+  fi
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    git rev-parse --show-toplevel; return 0
+  fi
+  pwd
+}
+
+# ---- Argument parsing ----
+PROJECT_ROOT=""
+REPOS=""
+ROLES="pdm,frontend,backend,qa,reviewer"
+PING_INTERVAL=1800
+
+if [ "$#" -gt 0 ] && [ -d "$1" ]; then
+  PROJECT_ROOT="$1"; shift
+fi
+
+POSITIONAL=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repos)  REPOS="$2";         shift 2 ;;
+    --roles)  ROLES="$2";         shift 2 ;;
+    --no-ping) PING_INTERVAL=0;   shift   ;;
+    -h|--help) usage; exit 0      ;;
+    -*) echo "Unknown option: $1"; usage; exit 1 ;;
+    *)  POSITIONAL+=("$1");       shift   ;;
+  esac
+done
+
+if [ -z "$PROJECT_ROOT" ]; then
+  PROJECT_ROOT="$(resolve_project_root)"
+fi
+
+if [ "${#POSITIONAL[@]}" -lt 2 ]; then
+  echo "Error: <initiative> and <branch> required"
+  usage; exit 1
+fi
+if [ -z "$REPOS" ]; then
+  echo "Error: --repos is required"
+  usage; exit 1
+fi
+
+INITIATIVE="${POSITIONAL[0]}"
+BRANCH="${POSITIONAL[1]}"
+PROJECT_NAME=$(basename "$PROJECT_ROOT")
+PROJECTS_DIR="$(dirname "$PROJECT_ROOT")"
+PROJECT_TEMPLATES_DIR="$PROJECT_ROOT/.kiro/agent-templates"
+SESSION_PREFIX="kiro-${PROJECT_NAME}"
+CHIEF_SESSION="kiro-chief"
+CHIEF_AGENTS_DIR="${HOME}/.kiro/agents"
+
+resolve_template() {
+  local role="$1"
+  if [ -f "$PROJECT_TEMPLATES_DIR/team-${role}.json" ]; then
+    echo "$PROJECT_TEMPLATES_DIR/team-${role}.json"
+  elif [ -f "$GENERIC_TEMPLATES_DIR/team-${role}.json" ]; then
+    echo "$GENERIC_TEMPLATES_DIR/team-${role}.json"
+  else
+    return 1
+  fi
+}
+
+start_chief_if_needed() {
+  if tmux has-session -t "$CHIEF_SESSION" 2>/dev/null; then
+    echo "  [skip] $CHIEF_SESSION already running"; return 0
+  fi
+  mkdir -p "$CHIEF_AGENTS_DIR"
+  if [ ! -f "${CHIEF_AGENTS_DIR}/chief-pdm.json" ]; then
+    local chief_template="$GENERIC_TEMPLATES_DIR/chief-pdm.json"
+    sed "s/{project}/global/g" "$chief_template" > "${CHIEF_AGENTS_DIR}/chief-pdm.json"
+    echo "  [created] ${CHIEF_AGENTS_DIR}/chief-pdm.json"
+  fi
+  tmux new-session -d -s "$CHIEF_SESSION" -c "$PROJECTS_DIR"
+  tmux send-keys -t "$CHIEF_SESSION" "kiro-cli chat --agent chief-pdm" Enter
+  local chief_log="${HOME}/.kiro/chief-notifier.log"
+  nohup "${SCRIPT_DIR}/chief-notifier.sh" "$PROJECTS_DIR" > "$chief_log" 2>&1 &
+  echo "  [started] $CHIEF_SESSION (chief-pdm + chief-notifier) @ $PROJECTS_DIR"
+}
+
+# ---- Header ----
+echo "=== Project: $PROJECT_NAME ($PROJECT_ROOT) ==="
+echo "=== Mode: multi-repo ==="
+echo ""
+echo "=== Chief session ==="
+start_chief_if_needed
+echo ""
+echo "=========================================="
+echo "  Initiative: $INITIATIVE"
+echo "  Branch:     feature/${BRANCH}"
+echo "  Repos:      $REPOS"
+echo "  Meta dir:   $META_DIR"
+echo "  Roles:      $ROLES"
+echo "  Ping:       $([ "$PING_INTERVAL" = "0" ] && echo disabled || echo "${PING_INTERVAL}s")"
+echo "=========================================="
+
+# ---- 0. Pre-flight: verify all repos exist ----
+IFS=',' read -ra repo_arr <<< "$REPOS"
+for repo in "${repo_arr[@]}"; do
+  repo_dir="${PROJECTS_DIR}/${repo}"
+  if [ ! -d "$repo_dir" ]; then
+    echo "  [error] repo not found: $repo_dir"
+    exit 1
+  fi
+done
+echo "  [ok] all repos found"
+
+# ---- 1. Create worktree in each repo ----
+IFS=',' read -ra repo_arr <<< "$REPOS"
+for repo in "${repo_arr[@]}"; do
+  repo_dir="${PROJECTS_DIR}/${repo}"
+  worktree_dir="${PROJECT_ROOT}/${repo}-${INITIATIVE}"
+  if [ -d "$worktree_dir" ]; then
+    echo "  [skip worktree] $worktree_dir already exists"
+  else
+    cd "$repo_dir"
+    if ! git show-ref --verify --quiet "refs/heads/feature/${BRANCH}"; then
+      local_base=$(git rev-parse --abbrev-ref HEAD)
+      git branch "feature/${BRANCH}" "$local_base"
+      echo "  [branch created] feature/${BRANCH} in $repo (from $local_base)"
+    fi
+    git worktree add "$worktree_dir" "feature/${BRANCH}"
+    echo "  [worktree created] $worktree_dir"
+  fi
+done
+
+# ---- 2. Tasks / results / plans dirs ----
+tasks_dir="${PROJECT_ROOT}/kiro-team/teams/${INITIATIVE}/tasks"
+results_dir="${PROJECT_ROOT}/kiro-team/teams/${INITIATIVE}/results"
+plans_dir="${PROJECT_ROOT}/kiro-team/teams/${INITIATIVE}/plans"
+mkdir -p "$tasks_dir" "$results_dir" "$plans_dir"
+
+# ---- 3. Agent definitions ----
+agents_dir="${PROJECT_ROOT}/.kiro/agents"
+mkdir -p "$agents_dir"
+IFS=',' read -ra role_arr <<< "$ROLES"
+for role in "${role_arr[@]}"; do
+  template=""
+  if ! template=$(resolve_template "$role"); then
+    echo "  [error] template not found for role: $role"
+    echo "         Searched: $PROJECT_TEMPLATES_DIR, $GENERIC_TEMPLATES_DIR"
+    exit 1
+  fi
+  target="${agents_dir}/${INITIATIVE}-${role}.json"
+  if [ -f "$target" ]; then
+    echo "  [skip agent] ${INITIATIVE}-${role}.json"
+  else
+    sed "s/{team}/${INITIATIVE}/g" "$template" > "$target"
+    echo "  [agent created] ${INITIATIVE}-${role}.json"
+  fi
+done
+
+# ---- 4. Session ----
+session_name="${SESSION_PREFIX}-${INITIATIVE}"
+if tmux has-session -t "$session_name" 2>/dev/null; then
+  echo "  [skip session] $session_name already running"
+else
+  tmux new-session -d -s "$session_name" -c "$PROJECT_ROOT"
+  pdm_pane=$(tmux list-panes -t "$session_name" -F "#{pane_id}" | head -1)
+  echo "$pdm_pane" > "${tasks_dir}/.pane_${INITIATIVE}-pdm"
+  tmux send-keys -t "$session_name" "kiro-cli chat --agent ${INITIATIVE}-pdm" Enter
+
+  notifier_log="${tasks_dir}/.notifier.log"
+  nohup "${SCRIPT_DIR}/team-notifier.sh" "$INITIATIVE" "$PROJECT_ROOT" "$PING_INTERVAL" \
+    > "$notifier_log" 2>&1 &
+  echo "  [session started] $session_name (log: $notifier_log)"
+fi
+
+echo ""
+echo "=== Setup complete ==="
+echo "Repos available in session:"
+for repo in "${repo_arr[@]}"; do
+  echo "  $PROJECT_ROOT/${repo}-${INITIATIVE}/"
+done
+echo "Attach:"
+echo "  tmux attach -t kiro-chief"
+echo "  tmux attach -t $session_name"
+
+scripts/install.sh
+#!/bin/bash
+# install.sh - kiro-team を指定プロジェクトにインストール (薄いシムを生成)
+#
+# 設計:
+#   ~/kiro-team はライブラリ (単一ソース)。プロジェクト側はシム + 設定のみ持つ。
+#   ~/kiro-team を更新するだけで全プロジェクトに反映される。
+#
+# Usage:
+#   ./install.sh <project-root>
+# Example:
+#   ~/kiro-team/scripts/install.sh ~/Desktop/projects/myproject
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIRO_TEAM_DIR="$(dirname "$SCRIPT_DIR")"
+TARGET="${1:?Usage: $0 <project-root>}"
+
+if [ ! -d "$TARGET" ]; then
+  echo "Error: $TARGET does not exist"
+  exit 1
+fi
+
+echo "Installing kiro-team into: $TARGET"
+echo "Library source: $KIRO_TEAM_DIR"
+echo ""
+
+# ---- Directory structure ----
+mkdir -p "$TARGET/kiro-team/scripts"
+mkdir -p "$TARGET/kiro-team/plans"
+mkdir -p "$TARGET/kiro-team/teams"
+mkdir -p "$TARGET/.kiro/agents"
+mkdir -p "$TARGET/.kiro/agent-templates"
+
+# ---- Project shim: setup.sh ----
+cat > "$TARGET/kiro-team/scripts/setup.sh" <<'SHIM'
+#!/bin/bash
+# Thin shim — calls ~/kiro-team/scripts/setup-teams.sh with project root auto-resolved.
+# Override library location with KIRO_TEAM_HOME env var if needed.
+set -e
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+KIRO_TEAM_HOME="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+exec "${KIRO_TEAM_HOME}/scripts/setup-teams.sh" "$PROJECT_ROOT" "$@"
+SHIM
+chmod +x "$TARGET/kiro-team/scripts/setup.sh"
+echo "  [created] kiro-team/scripts/setup.sh"
+
+# ---- Project shim: setup-multi.sh ----
+cat > "$TARGET/kiro-team/scripts/setup-multi.sh" <<'SHIM'
+#!/bin/bash
+# Thin shim — calls ~/kiro-team/scripts/setup-multi.sh with project root auto-resolved.
+set -e
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+KIRO_TEAM_HOME="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+exec "${KIRO_TEAM_HOME}/scripts/setup-multi.sh" "$PROJECT_ROOT" "$@"
+SHIM
+chmod +x "$TARGET/kiro-team/scripts/setup-multi.sh"
+echo "  [created] kiro-team/scripts/setup-multi.sh"
+
+# ---- Project shim: stop.sh ----
+cat > "$TARGET/kiro-team/scripts/stop.sh" <<'SHIM'
+#!/bin/bash
+# Thin shim — calls ~/kiro-team/scripts/stop-teams.sh with project root auto-resolved.
+set -e
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+KIRO_TEAM_HOME="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+exec "${KIRO_TEAM_HOME}/scripts/stop-teams.sh" "$PROJECT_ROOT" "$@"
+SHIM
+chmod +x "$TARGET/kiro-team/scripts/stop.sh"
+echo "  [created] kiro-team/scripts/stop.sh"
+
+# ---- .gitkeep for empty dirs ----
+touch "$TARGET/kiro-team/plans/.gitkeep"
+touch "$TARGET/kiro-team/teams/.gitkeep"
+touch "$TARGET/.kiro/agents/.gitkeep"
+touch "$TARGET/.kiro/agent-templates/.gitkeep"
+
+# ---- README hint ----
+cat > "$TARGET/kiro-team/README.md" <<README
+# kiro-team (this project)
+
+This project uses [kiro-team](file://${KIRO_TEAM_DIR}) as its multi-agent autonomous development library.
+
+## Structure
+
+\`\`\`
+kiro-team/
+├── scripts/
+│   ├── setup.sh        # 案件立ち上げ (~/kiro-team/scripts/setup-teams.sh への shim)
+│   └── stop.sh         # 案件停止
+├── plans/              # 施策の plan ファイル
+├── teams/<initiative>/ # 案件ごとの tasks/, results/, plans/
+└── teams.conf          # --all 用の案件定義 (任意)
+
+.kiro/
+├── agents/             # 案件ごとに自動生成される PdM/specialist 定義
+└── agent-templates/    # プロジェクト固有のテンプレ override (任意)
+\`\`\`
+
+## Quick start
+
+\`\`\`bash
+# 案件1つ立ち上げ
+./kiro-team/scripts/setup.sh <initiative> <branch> [--roles ...] [--no-ping]
+
+# 横断リポジトリ案件
+./kiro-team/scripts/setup-multi.sh <initiative> <branch> --repos repo1,repo2 [--roles ...]
+
+# ~/kiro-team/projects.conf に書いた全案件を立ち上げ
+~/kiro-team/scripts/setup-teams.sh --all
+
+# 全停止
+./kiro-team/scripts/stop.sh
+\`\`\`
+
+## Project-specific roles
+
+\`.kiro/agent-templates/team-<role>.json\` を置くと、汎用テンプレより優先して使われます。
+プロジェクト固有のロール (例: educator, marketer) はここに置いてください。
+README
+
+echo "  [created] kiro-team/README.md"
+
+echo ""
+echo "✅ Installed."
+echo ""
+echo "Next steps:"
+echo "  1. Add to ~/kiro-team/projects.conf:"
+echo "     ${TARGET##*/}:<initiative>:<branch>:<roles>"
+echo "  2. ~/kiro-team/scripts/setup-teams.sh --all"
+echo "     or"
+echo "     ./kiro-team/scripts/setup.sh <initiative> <branch>  # 個別起動"
+
+
+scripts/team-notifier.sh
+#!/bin/bash
+# team-notifier.sh - 案件 (initiative) 単位の notifier (汎用版)
+# Usage: ./team-notifier.sh <initiative> <worktree-root> [ping-interval-seconds]
+# Example: ./team-notifier.sh mobile-cv-improve /Users/naoish/Desktop/projects/orera-mobile-cv-improve
+# Example (ping disabled): ./team-notifier.sh mobile-cv-improve /Users/.../orera-mobile-cv-improve 0
+
+set +e
+INITIATIVE="${1:?Usage: $0 <initiative> <worktree-root> [ping-interval-seconds]}"
+WORKTREE_DIR="${2:-$(pwd)}"
+PING_INTERVAL="${3:-1800}"  # default 30 min, 0 disables
+# Derive base project name (strip initiative suffix from worktree dir name)
+PROJECT_NAME=$(basename "$WORKTREE_DIR" | sed "s/-${INITIATIVE}$//")
+
+TASKS_DIR="$WORKTREE_DIR/kiro-team/teams/${INITIATIVE}/tasks"
+RESULTS_DIR="$WORKTREE_DIR/kiro-team/teams/${INITIATIVE}/results"
+SESSION_NAME="kiro-${PROJECT_NAME}-${INITIATIVE}"
+POLL_INTERVAL=5
+PROMPT_TIMEOUT=60
+
+mkdir -p "$TASKS_DIR" "$RESULTS_DIR"
+
+log() {
+  echo "[$(date +%H:%M:%S)] [$INITIATIVE] $*"
+}
+
+get_agent_pane() {
+  local agent="$1"
+  cat "$TASKS_DIR/.pane_${agent}" 2>/dev/null
+}
+
+wait_for_prompt() {
+  local agent="$1"
+  local pane
+  pane=$(get_agent_pane "$agent")
+  [ -z "$pane" ] && return 1
+  local elapsed=0
+  while [ "$elapsed" -lt "$PROMPT_TIMEOUT" ]; do
+    local snap1 snap2
+    snap1=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5)
+    sleep 2
+    snap2=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5)
+    if [ "$snap1" = "$snap2" ] && ! echo "$snap2" | grep -qE "Thinking"; then
+      return 0
+    fi
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
+ensure_session() {
+  local agent="$1"
+  local pane_file="$TASKS_DIR/.pane_${agent}"
+
+  [ -f "$pane_file" ] && [ -s "$pane_file" ] && return 0
+
+  touch "$pane_file"
+  log "Starting session for $agent..."
+
+  # Use new-window (not split-window) to keep the layout clean
+  local new_pane
+  new_pane=$(tmux new-window -t "$SESSION_NAME" -n "$agent" -c "$WORKTREE_DIR" -P -F "#{pane_id}")
+  echo "$new_pane" > "$pane_file"
+  tmux send-keys -t "$new_pane" "kiro-cli chat --agent $agent" Enter
+  sleep 15
+}
+
+deliver_task() {
+  local agent="$1"
+  local task_file="$TASKS_DIR/${agent}.md"
+  local pane
+  pane=$(get_agent_pane "$agent")
+  [ -z "$pane" ] && return 1
+  local abs_path
+  abs_path="$(cd "$(dirname "$task_file")" && pwd)/$(basename "$task_file")"
+  tmux send-keys -t "$pane" "次のタスクファイルを読んで実行してください: $abs_path" Enter
+  touch "$TASKS_DIR/${agent}.sent"
+  log "TASK_SENT $agent TASK_ID:$(grep "^TASK_ID:" "$task_file" 2>/dev/null | head -1 | awk '{print $2}')"
+}
+
+notify_pdm() {
+  local agent="$1"
+  local pdm_pane
+  pdm_pane=$(cat "$TASKS_DIR/.pane_${INITIATIVE}-pdm" 2>/dev/null)
+  [ -z "$pdm_pane" ] && return 0
+  tmux send-keys -t "$pdm_pane" "[SYSTEM] ${agent} updated results. Check kiro-team/teams/${INITIATIVE}/results/${agent}.md" Enter
+  log "NOTIFIED pdm about $agent results"
+}
+
+log "notifier started. Monitoring $TASKS_DIR/ (ping_interval=${PING_INTERVAL}s)"
+
+LAST_PING=0
+
+while true; do
+  # Periodic autonomous ping (skipped if PING_INTERVAL is 0)
+  if (( PING_INTERVAL > 0 )); then
+    NOW=$(date +%s)
+    if (( NOW - LAST_PING >= PING_INTERVAL )); then
+      pdm_pane=$(cat "$TASKS_DIR/.pane_${INITIATIVE}-pdm" 2>/dev/null)
+      if [ -n "$pdm_pane" ] && wait_for_prompt "${INITIATIVE}-pdm"; then
+        tmux send-keys -t "$pdm_pane" "自律チェック: 各スペシャリストの進捗を確認してください。アイドル中のスペシャリストに次のタスクを委譲、ブロッカーがあれば解消。全タスク完了なら次のイテレーションを計画してください。本当に外部入力待ちの場合のみ '待機中: <理由>' と報告。" Enter
+        log "PING pdm (autonomous check)"
+        LAST_PING=$NOW
+      fi
+    fi
+  fi
+
+  # Check for new tasks
+  for task_file in "$TASKS_DIR"/*.md; do
+    [ -f "$task_file" ] || continue
+    agent=$(basename "$task_file" .md)
+    sent_file="$TASKS_DIR/${agent}.sent"
+
+    if [ -f "$sent_file" ] && [ "$sent_file" -nt "$task_file" ]; then
+      continue
+    fi
+
+    [[ "$agent" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+
+    # Validate agent definition exists
+    if [ ! -f "$WORKTREE_DIR/.kiro/agents/${agent}.json" ]; then
+      log "ERROR: agent '$agent' not found in .kiro/agents/. Skipping task."
+      pdm_pane=$(cat "$TASKS_DIR/.pane_${INITIATIVE}-pdm" 2>/dev/null)
+      if [ -n "$pdm_pane" ]; then
+        tmux send-keys -t "$pdm_pane" "[SYSTEM ERROR] タスクファイル '${agent}.md' に対応するエージェント定義 (.kiro/agents/${agent}.json) が存在しません。setup-teams.sh で --roles に該当ロールを含めて再実行してください。" Enter
+      fi
+      touch "$TASKS_DIR/${agent}.sent"
+      continue
+    fi
+
+    ensure_session "$agent" || continue
+
+    if ! wait_for_prompt "$agent"; then
+      continue
+    fi
+
+    deliver_task "$agent"
+  done
+
+  # Check for new results (notify PdM, skip PDM's own report)
+  for result_file in "$RESULTS_DIR"/*.md; do
+    [ -f "$result_file" ] || continue
+    agent=$(basename "$result_file" .md)
+    # PDM's own report is handled by chief-notifier, not here
+    [ "$agent" = "${INITIATIVE}-pdm" ] && continue
+    notified_file="$RESULTS_DIR/${agent}.notified"
+
+    if [ -f "$notified_file" ] && [ "$notified_file" -nt "$result_file" ]; then
+      continue
+    fi
+
+    notify_pdm "$agent"
+    touch "$notified_file"
+  done
+
+  sleep "$POLL_INTERVAL"
+done
+
+
+
+
+scripts/team-notifier.sh
+#!/bin/bash
+# chief-notifier.sh - グローバル Chief PdM 用 notifier
+# Usage: ./chief-notifier.sh <projects-dir>
+# Example: ./chief-notifier.sh /Users/naoish/projects
+#
+# 役割:
+# - 1時間ごとに chief-pdm に全プロジェクト・全案件チェックを促す
+# - 各案件の team-notifier ログを監視し、長時間応答なしの案件を検出して chief に通知
+
+set +e
+PROJECTS_DIR="${1:?Usage: $0 <projects-dir>}"
+SESSION_NAME="kiro-chief"
+POLL_INTERVAL=5
+PROMPT_TIMEOUT=60
+PING_INTERVAL=3600    # 1 hour
+STALL_THRESHOLD=3600  # 1 hour without notifier activity = stalled
+
+log() {
+  echo "[$(date +%H:%M:%S)] [chief] $*"
+}
+
+wait_for_prompt() {
+  local pane="$1"
+  local elapsed=0
+  while [ "$elapsed" -lt "$PROMPT_TIMEOUT" ]; do
+    local snap1 snap2
+    snap1=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5)
+    sleep 2
+    snap2=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5)
+    if [ "$snap1" = "$snap2" ] && ! echo "$snap2" | grep -qE "Thinking"; then
+      return 0
+    fi
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
+get_chief_pane() {
+  tmux list-panes -t "$SESSION_NAME" -F "#{pane_id}" 2>/dev/null | head -1
+}
+
+# Discover all active initiatives across all projects under PROJECTS_DIR
+discover_all_initiatives() {
+  for project_dir in "$PROJECTS_DIR"/*/; do
+    [ -d "$project_dir" ] || continue
+    local project_name
+    project_name=$(basename "$project_dir")
+    # Look for kiro-team/teams/<initiative>/ directories
+    for teams_dir in "$project_dir"kiro-team/teams/*/; do
+      [ -d "$teams_dir" ] || continue
+      local initiative
+      initiative=$(basename "$teams_dir")
+      echo "${project_name}:${initiative}:${teams_dir}"
+    done
+  done
+}
+
+check_stalled_initiatives() {
+  local stalled=""
+  while IFS=: read -r project initiative teams_dir; do
+    [ -z "$initiative" ] && continue
+    local notifier_log="${teams_dir}tasks/.notifier.log"
+    if [ -f "$notifier_log" ]; then
+      local last_mtime now_epoch
+      last_mtime=$(stat -f %m "$notifier_log" 2>/dev/null || stat -c %Y "$notifier_log" 2>/dev/null)
+      now_epoch=$(date +%s)
+      if [ -n "$last_mtime" ] && (( now_epoch - last_mtime > STALL_THRESHOLD )); then
+        stalled="${stalled} ${project}/${initiative}"
+      fi
+    fi
+  done < <(discover_all_initiatives)
+  echo "$stalled"
+}
+
+notify_chief_pdm_result() {
+  local project="$1" initiative="$2" result_file="$3"
+  local chief_pane
+  chief_pane=$(get_chief_pane)
+  [ -z "$chief_pane" ] && return 0
+  wait_for_prompt "$chief_pane" || return 0
+  tmux send-keys -t "$chief_pane" "[SYSTEM] ${project}/${initiative} PDM updated results. Check ${result_file}" Enter
+  log "NOTIFIED chief about ${project}/${initiative} pdm results"
+}
+
+check_pdm_results() {
+  while IFS=: read -r project initiative teams_dir; do
+    [ -z "$initiative" ] && continue
+    local result_file="${teams_dir}results/${initiative}-pdm.md"
+    [ -f "$result_file" ] || continue
+    local notified_file="${teams_dir}results/${initiative}-pdm.chief-notified"
+    if [ -f "$notified_file" ] && [ "$notified_file" -nt "$result_file" ]; then
+      continue
+    fi
+    notify_chief_pdm_result "$project" "$initiative" "$result_file"
+    touch "$notified_file"
+  done < <(discover_all_initiatives)
+}
+
+log "chief-notifier started. Monitoring all projects under: $PROJECTS_DIR"
+
+LAST_PING=0
+
+while true; do
+  check_pdm_results
+
+  NOW=$(date +%s)
+  if (( NOW - LAST_PING >= PING_INTERVAL )); then
+    chief_pane=$(get_chief_pane)
+    if [ -n "$chief_pane" ] && wait_for_prompt "$chief_pane"; then
+      stalled=$(check_stalled_initiatives)
+      stalled_msg=""
+      if [ -n "$stalled" ]; then
+        stalled_msg=" [警告] 長時間応答なしの案件:${stalled}"
+      fi
+
+      tmux send-keys -t "$chief_pane" "全プロジェクト定期チェック: ${PROJECTS_DIR} 配下の全プロジェクト・全案件 (kiro-team/teams/<initiative>/) の plans/ と results/<initiative>-pdm.md を確認し、以下を報告してください。(1) 案件ごとの進捗と KPI 達成状況 (2) BLOCKED/QUESTION の放置がないか (3) プロジェクト間の整合性 (依存関係・方針の齟齬) (4) 全体の優先順位の見直し提案。判断が必要なものはユーザーに提起してください。${stalled_msg}" Enter
+      log "PING chief (autonomous check)${stalled:+ stalled:$stalled}"
+      LAST_PING=$NOW
+    fi
+  fi
+
+  sleep "$POLL_INTERVAL"
+done scripts/team-notifier.sh
+#!/bin/bash
+# chief-notifier.sh - グローバル Chief PdM 用 notifier
+# Usage: ./chief-notifier.sh <projects-dir>
+# Example: ./chief-notifier.sh /Users/naoish/projects
+#
+# 役割:
+# - 1時間ごとに chief-pdm に全プロジェクト・全案件チェックを促す
+# - 各案件の team-notifier ログを監視し、長時間応答なしの案件を検出して chief に通知
+
+set +e
+PROJECTS_DIR="${1:?Usage: $0 <projects-dir>}"
+SESSION_NAME="kiro-chief"
+POLL_INTERVAL=5
+PROMPT_TIMEOUT=60
+PING_INTERVAL=3600    # 1 hour
+STALL_THRESHOLD=3600  # 1 hour without notifier activity = stalled
+
+log() {
+  echo "[$(date +%H:%M:%S)] [chief] $*"
+}
+
+wait_for_prompt() {
+  local pane="$1"
+  local elapsed=0
+  while [ "$elapsed" -lt "$PROMPT_TIMEOUT" ]; do
+    local snap1 snap2
+    snap1=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5)
+    sleep 2
+    snap2=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -5)
+    if [ "$snap1" = "$snap2" ] && ! echo "$snap2" | grep -qE "Thinking"; then
+      return 0
+    fi
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
+get_chief_pane() {
+  tmux list-panes -t "$SESSION_NAME" -F "#{pane_id}" 2>/dev/null | head -1
+}
+
+# Discover all active initiatives across all projects under PROJECTS_DIR
+discover_all_initiatives() {
+  for project_dir in "$PROJECTS_DIR"/*/; do
+    [ -d "$project_dir" ] || continue
+    local project_name
+    project_name=$(basename "$project_dir")
+    # Look for kiro-team/teams/<initiative>/ directories
+    for teams_dir in "$project_dir"kiro-team/teams/*/; do
+      [ -d "$teams_dir" ] || continue
+      local initiative
+      initiative=$(basename "$teams_dir")
+      echo "${project_name}:${initiative}:${teams_dir}"
+    done
+  done
+}
+
+check_stalled_initiatives() {
+  local stalled=""
+  while IFS=: read -r project initiative teams_dir; do
+    [ -z "$initiative" ] && continue
+    local notifier_log="${teams_dir}tasks/.notifier.log"
+    if [ -f "$notifier_log" ]; then
+      local last_mtime now_epoch
+      last_mtime=$(stat -f %m "$notifier_log" 2>/dev/null || stat -c %Y "$notifier_log" 2>/dev/null)
+      now_epoch=$(date +%s)
+      if [ -n "$last_mtime" ] && (( now_epoch - last_mtime > STALL_THRESHOLD )); then
+        stalled="${stalled} ${project}/${initiative}"
+      fi
+    fi
+  done < <(discover_all_initiatives)
+  echo "$stalled"
+}
+
+notify_chief_pdm_result() {
+  local project="$1" initiative="$2" result_file="$3"
+  local chief_pane
+  chief_pane=$(get_chief_pane)
+  [ -z "$chief_pane" ] && return 0
+  wait_for_prompt "$chief_pane" || return 0
+  tmux send-keys -t "$chief_pane" "[SYSTEM] ${project}/${initiative} PDM updated results. Check ${result_file}" Enter
+  log "NOTIFIED chief about ${project}/${initiative} pdm results"
+}
+
+check_pdm_results() {
+  while IFS=: read -r project initiative teams_dir; do
+    [ -z "$initiative" ] && continue
+    local result_file="${teams_dir}results/${initiative}-pdm.md"
+    [ -f "$result_file" ] || continue
+    local notified_file="${teams_dir}results/${initiative}-pdm.chief-notified"
+    if [ -f "$notified_file" ] && [ "$notified_file" -nt "$result_file" ]; then
+      continue
+    fi
+    notify_chief_pdm_result "$project" "$initiative" "$result_file"
+    touch "$notified_file"
+  done < <(discover_all_initiatives)
+}
+
+log "chief-notifier started. Monitoring all projects under: $PROJECTS_DIR"
+
+LAST_PING=0
+
+while true; do
+  check_pdm_results
+
+  NOW=$(date +%s)
+  if (( NOW - LAST_PING >= PING_INTERVAL )); then
+    chief_pane=$(get_chief_pane)
+    if [ -n "$chief_pane" ] && wait_for_prompt "$chief_pane"; then
+      stalled=$(check_stalled_initiatives)
+      stalled_msg=""
+      if [ -n "$stalled" ]; then
+        stalled_msg=" [警告] 長時間応答なしの案件:${stalled}"
+      fi
+
+      tmux send-keys -t "$chief_pane" "全プロジェクト定期チェック: ${PROJECTS_DIR} 配下の全プロジェクト・全案件 (kiro-team/teams/<initiative>/) の plans/ と results/<initiative>-pdm.md を確認し、以下を報告してください。(1) 案件ごとの進捗と KPI 達成状況 (2) BLOCKED/QUESTION の放置がないか (3) プロジェクト間の整合性 (依存関係・方針の齟齬) (4) 全体の優先順位の見直し提案。判断が必要なものはユーザーに提起してください。${stalled_msg}" Enter
+      log "PING chief (autonomous check)${stalled:+ stalled:$stalled}"
+      LAST_PING=$NOW
+    fi
+  fi
+
+  sleep "$POLL_INTERVAL"
+done

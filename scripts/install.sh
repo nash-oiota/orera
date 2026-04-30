@@ -45,6 +45,18 @@ SHIM
 chmod +x "$TARGET/kiro-team/scripts/setup.sh"
 echo "  [created] kiro-team/scripts/setup.sh"
 
+# ---- Project shim: setup-multi.sh ----
+cat > "$TARGET/kiro-team/scripts/setup-multi.sh" <<'SHIM'
+#!/bin/bash
+# Thin shim — calls ~/kiro-team/scripts/setup-multi.sh with project root auto-resolved.
+set -e
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+KIRO_TEAM_HOME="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+exec "${KIRO_TEAM_HOME}/scripts/setup-multi.sh" "$PROJECT_ROOT" "$@"
+SHIM
+chmod +x "$TARGET/kiro-team/scripts/setup-multi.sh"
+echo "  [created] kiro-team/scripts/setup-multi.sh"
+
 # ---- Project shim: stop.sh ----
 cat > "$TARGET/kiro-team/scripts/stop.sh" <<'SHIM'
 #!/bin/bash
@@ -56,28 +68,6 @@ exec "${KIRO_TEAM_HOME}/scripts/stop-teams.sh" "$PROJECT_ROOT" "$@"
 SHIM
 chmod +x "$TARGET/kiro-team/scripts/stop.sh"
 echo "  [created] kiro-team/scripts/stop.sh"
-
-# ---- teams.conf.example ----
-if [ ! -f "$TARGET/kiro-team/teams.conf" ]; then
-  cat > "$TARGET/kiro-team/teams.conf.example" <<'CONF'
-# teams.conf - プロジェクト配下の案件 (initiative) 定義
-#
-# フォーマット: <initiative>:<branch>[:<roles>]
-#   - initiative: 案件名 (worktree とセッション名の suffix)
-#   - branch: feature/<branch> 形式で worktree 作成
-#   - roles (任意): カンマ区切り。省略時は pdm,frontend,backend,qa,reviewer
-#
-# 立ち上げ:
-#   ./kiro-team/scripts/setup.sh --all          # 配下を全て起動
-#   ./kiro-team/scripts/setup.sh <init> <br>    # 個別起動
-#
-# 例:
-# blog:content-main:pdm,frontend,qa,reviewer
-# growth:growth-main:pdm,frontend,qa,reviewer,designer
-# api-rewrite:api-rewrite-main:pdm,backend,qa,reviewer,architect
-CONF
-  echo "  [created] kiro-team/teams.conf.example (rename to teams.conf to use --all)"
-fi
 
 # ---- .gitkeep for empty dirs ----
 touch "$TARGET/kiro-team/plans/.gitkeep"
@@ -113,9 +103,11 @@ kiro-team/
 # 案件1つ立ち上げ
 ./kiro-team/scripts/setup.sh <initiative> <branch> [--roles ...] [--no-ping]
 
-# teams.conf に書いた全案件を立ち上げ
-cp kiro-team/teams.conf.example kiro-team/teams.conf  # 編集
-./kiro-team/scripts/setup.sh --all
+# 横断リポジトリ案件
+./kiro-team/scripts/setup-multi.sh <initiative> <branch> --repos repo1,repo2 [--roles ...]
+
+# ~/kiro-team/projects.conf に書いた全案件を立ち上げ
+~/kiro-team/scripts/setup-teams.sh --all
 
 # 全停止
 ./kiro-team/scripts/stop.sh
@@ -133,8 +125,10 @@ echo ""
 echo "✅ Installed."
 echo ""
 echo "Next steps:"
-echo "  1. cd $TARGET"
-echo "  2. (optional) cp kiro-team/teams.conf.example kiro-team/teams.conf && \$EDITOR kiro-team/teams.conf"
-echo "  3. ./kiro-team/scripts/setup.sh <initiative> <branch>      # 個別案件起動"
+echo "  1. Add to ~/kiro-team/projects.conf:"
+echo "     ${TARGET##*/}:<initiative>:<branch>:<roles>"
+echo "  2. ~/kiro-team/scripts/setup-teams.sh --all"
 echo "     or"
-echo "     ./kiro-team/scripts/setup.sh --all                       # teams.conf 全起動"
+echo "     ./kiro-team/scripts/setup.sh <initiative> <branch>  # 個別起動"
+
+

@@ -136,10 +136,12 @@ while true; do
     deliver_task "$agent"
   done
 
-  # Check for new results (notify PdM)
+  # Check for new results (notify PdM, skip PDM's own report)
   for result_file in "$RESULTS_DIR"/*.md; do
     [ -f "$result_file" ] || continue
     agent=$(basename "$result_file" .md)
+    # PDM's own report is handled by chief-notifier, not here
+    [ "$agent" = "${INITIATIVE}-pdm" ] && continue
     notified_file="$RESULTS_DIR/${agent}.notified"
 
     if [ -f "$notified_file" ] && [ "$notified_file" -nt "$result_file" ]; then
@@ -152,3 +154,7 @@ while true; do
 
   sleep "$POLL_INTERVAL"
 done
+
+
+
+

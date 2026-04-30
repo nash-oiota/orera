@@ -6,17 +6,18 @@ tmux + kiro-cli で動く「**案件 (initiative) ごとの自律エージェン
 ## コンセプト
 
 - **案件単位の独立**: 1案件1 worktree。同一リポで複数案件を干渉なく並走できる
-- **階層構造**: chief-pdm が複数の案件 PdM を統括、案件 PdM が specialists を率いる
+- **横断リポジトリ対応**: 複数リポジトリを横断する案件も1セッションで管理できる
+- **グローバル chief**: `kiro-chief` が全プロジェクト・全案件を横断監視する
+- **一括起動/停止**: `projects.conf` に案件を定義して `--all` で一括操作
 - **ファイルベース通信**: tasks/<role>.md → results/<role>.md でタスク配送と結果回収
 - **自律運用 (任意)**: 30分間隔の ping で PdM を自発的に駆動 (`--no-ping` で無効化可能)
-- **テンプレ駆動**: 13個の汎用ロールテンプレを `{team}` プレースホルダーで案件名に展開
+- **テンプレ駆動**: 汎用ロールテンプレを `{team}` プレースホルダーで案件名に展開
 
 ## 必要なもの
 
 - tmux
 - kiro-cli
 - git (worktree 対応)
-- Node.js (プロジェクトが Node の場合)
 
 ## 提供するロールテンプレ
 
@@ -43,12 +44,12 @@ tmux + kiro-cli で動く「**案件 (initiative) ごとの自律エージェン
 | **security** | セキュリティ深掘りレビュー |
 | **docs** | 技術文書・README・ADR・runbook |
 
-加えて、プロジェクトレベル司令塔として **chief-pdm** が1つ自動生成される。
+加えて、全プロジェクト横断の司令塔として **chief-pdm** が1つ自動生成される (`~/.kiro/agents/chief-pdm.json`)。
 
 ### プロジェクト固有ロール
 
 `<project>/.kiro/agent-templates/team-<role>.json` を置くと汎用テンプレより優先される。
-プロジェクト固有のロール (例: educator / marketer / seo-specialist) はここに置く。
+プロジェクト固有のロール (例: educator / marketer) はここに置く。
 
 ## ディレクトリ構造
 
@@ -56,13 +57,16 @@ tmux + kiro-cli で動く「**案件 (initiative) ごとの自律エージェン
 ```
 ~/kiro-team/
 ├── README.md
-├── agents/templates/         # 13ロール + chief-pdm の汎用テンプレ
+├── projects.conf             # 全プロジェクト・全案件の定義
+├── projects.conf.example     # サンプル
+├── agents/templates/         # 汎用ロールテンプレ
 ├── scripts/
 │   ├── install.sh            # プロジェクトに導入 (薄いシム生成)
 │   ├── setup-teams.sh        # 案件起動 (汎用本体)
+│   ├── setup-multi.sh        # 横断リポジトリ案件起動
 │   ├── stop-teams.sh         # 停止 (汎用本体)
 │   ├── team-notifier.sh      # 案件単位 notifier (タスク配送・自律ping)
-│   └── chief-notifier.sh     # プロジェクト全体 notifier
+│   └── chief-notifier.sh     # グローバル notifier (全プロジェクト監視)
 └── steering/                 # ブランチ戦略・施策管理ルール (任意参照)
 ```
 
@@ -72,15 +76,22 @@ tmux + kiro-cli で動く「**案件 (initiative) ごとの自律エージェン
 ├── kiro-team/
 │   ├── scripts/
 │   │   ├── setup.sh          # ~/kiro-team/scripts/setup-teams.sh への shim
+│   │   ├── setup-multi.sh    # ~/kiro-team/scripts/setup-multi.sh への shim
 │   │   └── stop.sh           # ~/kiro-team/scripts/stop-teams.sh への shim
 │   ├── plans/                # 施策計画
-│   ├── teams/<initiative>/   # 案件ごとの tasks/, results/, plans/ (自動作成)
-│   └── teams.conf            # --all 用の案件定義 (任意)
+│   └── teams/<initiative>/   # 案件ごとの tasks/, results/, plans/ (自動作成)
 └── .kiro/
-    ├── agents/               # 案件PdM/specialists 定義 (自動生成)
-    │   ├── chief-pdm.json    # 初回 setup 時に生成
+    ├── agents/               # 案件 PdM/specialists 定義 (自動生成)
     │   └── <initiative>-<role>.json
     └── agent-templates/      # プロジェクト固有テンプレ override (任意)
+```
+
+### 横断リポジトリ案件 (`setup-multi.sh` 使用時)
+```
+~/projects/your-modernization/          # セッションの作業場
+├── your-app-modernization/             # worktree (your-app の feature/modernization-main)
+├── your-deploy-modernization/          # worktree (your-deploy の feature/modernization-main)
+└── kiro-team/teams/modernization/       # tasks/, results/, plans/
 ```
 
 ## 導入
@@ -89,69 +100,89 @@ tmux + kiro-cli で動く「**案件 (initiative) ごとの自律エージェン
 # 1. ライブラリを取得 (一度だけ)
 git clone <repo> ~/kiro-team
 
-# 2. プロジェクトに導入 (シム + ディレクトリ + teams.conf.example を生成)
-~/kiro-team/scripts/install.sh ~/Desktop/projects/myproject
+# 2. projects.conf を作成
+cp ~/kiro-team/projects.conf.example ~/kiro-team/projects.conf
+# 編集して案件を定義
+
+# 3. 各プロジェクトに導入 (シム + ディレクトリを生成)
+~/kiro-team/scripts/install.sh ~/projects/myproject
 ```
 
 ライブラリの場所は `KIRO_TEAM_HOME` 環境変数で上書き可能 (デフォルト `$HOME/kiro-team`)。
 
 ## 使い方
 
+### 一括起動/停止 (推奨)
+
 ```bash
-cd ~/Desktop/projects/myproject
+# projects.conf に定義した全案件を一括起動
+~/kiro-team/scripts/setup-teams.sh --all
+~/kiro-team/scripts/setup-teams.sh --all --no-ping   # 自律ping 無効
 
-# 案件1つ起動 (引数: <initiative> <branch>)
+# 全停止
+~/kiro-team/scripts/stop-teams.sh --all
+
+# 全停止 + worktree 削除
+~/kiro-team/scripts/stop-teams.sh --all --clean
+```
+
+### 個別起動
+
+```bash
+cd ~/projects/myproject
+
+# 単一リポ案件
 ./kiro-team/scripts/setup.sh blog content-main
-
-# ロール指定
 ./kiro-team/scripts/setup.sh api-rewrite api-rewrite-main \
-  --roles pdm,backend,qa,reviewer,architect
+  --roles pdm,backend,qa,reviewer,architect --no-ping
 
-# ping 無効化 (手動駆動運用)
-./kiro-team/scripts/setup.sh quick-fix quick-fix-main --no-ping
-
-# teams.conf に書いた全案件を一括起動
-cp kiro-team/teams.conf.example kiro-team/teams.conf  # 編集
-./kiro-team/scripts/setup.sh --all
+# 横断リポジトリ案件
+./kiro-team/scripts/setup-multi.sh modernization mod-main \
+  --repos your-app,your-deploy --roles pdm,backend,qa,reviewer,architect
 
 # 停止
-./kiro-team/scripts/stop.sh             # 全案件 + chief
-./kiro-team/scripts/stop.sh blog        # 1案件のみ (chief は残す)
-
-# セッションに接続
-tmux attach -t kiro-myproject-chief     # chief PdM
-tmux attach -t kiro-myproject-blog      # 案件 PdM
+./kiro-team/scripts/stop.sh             # 全案件停止 (worktree 残す)
+./kiro-team/scripts/stop.sh blog        # 1案件のみ
+./kiro-team/scripts/stop.sh blog --clean  # 1案件停止 + worktree 削除
+./kiro-team/scripts/stop.sh chief       # グローバル chief のみ停止
 ```
 
-### `teams.conf` 形式
+### セッションに接続
 
-```
-# <initiative>:<branch>[:<roles>]
-blog:content-main:pdm,frontend,qa,reviewer
-api-rewrite:api-rewrite-main:pdm,backend,qa,reviewer,architect
-quick-fix:quick-fix-main
+```bash
+tmux attach -t kiro-chief                    # グローバル chief PdM
+tmux attach -t kiro-myproject-blog           # 案件 PdM
 ```
 
-`<roles>` 省略時はコア5ロール (pdm,frontend,backend,qa,reviewer)。
+### `projects.conf` 形式
+
+```
+# project:initiative:branch:roles[:repos]
+your-app:redis-to-valkey:redis_to_valkey:pdm,frontend,backend,qa,reviewer
+your-modernization:modernization:mod-main:pdm,backend,qa,reviewer,architect:your-app,your-deploy
+```
+
+`repos` を指定すると横断リポジトリ案件として `setup-multi.sh` が呼ばれる。
 
 ## 案件のライフサイクル
 
 ```
 1. ユーザー → chief-pdm: 案件を相談、KPI と方針を合意
-2. ユーザー: ./kiro-team/scripts/setup.sh <init> <br> で worktree + tmux + 案件 PdM 起動
-3. chief-pdm or ユーザー: tasks/<init>-pdm.md にブリーフを書く
-4. 案件 PdM: 受信 → タスク分解 → tasks/<init>-<role>.md に specialists 用タスク投入
-5. team-notifier: tasks/ を検知 → specialist の tmux ペインに配送
-6. specialist: 実行 → results/<init>-<role>.md に結果書き込み
-7. team-notifier: results/ を検知 → 案件 PdM に [SYSTEM] 通知
-8. 案件 PdM: 結果統合 → results/<init>-pdm.md を更新
-9. chief-pdm: results/ を見て案件横断調整 + ユーザー報告
-10. クローズ: ./kiro-team/scripts/stop.sh <init>
+2. projects.conf に案件を追加
+3. ~/kiro-team/scripts/setup-teams.sh --all で起動
+4. chief-pdm or ユーザー: tasks/<init>-pdm.md にブリーフを書く
+5. 案件 PdM: 受信 → タスク分解 → tasks/<init>-<role>.md に specialists 用タスク投入
+6. team-notifier: tasks/ を検知 → specialist の tmux ペインに配送
+7. specialist: 実行 → results/<init>-<role>.md に結果書き込み
+8. team-notifier: results/ を検知 → 案件 PdM に [SYSTEM] 通知
+9. 案件 PdM: 結果統合 → results/<init>-pdm.md を更新
+10. chief-pdm: 全プロジェクトの results/ を見て横断調整 + ユーザー報告
+11. クローズ: stop.sh <init> --clean
 ```
 
 ## 通信プロトコル
 
-### タスクファイル (`tasks/<initiative>-<role>.md`)
+### タスクファイル (`kiro-team/teams/<initiative>/tasks/<initiative>-<role>.md`)
 ```
 TASK_ID: <unique-id>
 OWNER: <initiative>-<role>
@@ -165,55 +196,41 @@ FILE_OWNERSHIP: <files this task can modify>
 <concrete, verifiable conditions>
 ```
 
-### 結果ファイル (`results/<initiative>-<role>.md`)
+### 結果ファイル (`kiro-team/teams/<initiative>/results/<initiative>-<role>.md`)
 ```
 TASK_ID: <id>
-STATUS: COMPLETE | BLOCKED | QUESTION | APPROVED | CHANGES_REQUESTED | ...
+STATUS: COMPLETE | BLOCKED | QUESTION | APPROVED | CHANGES_REQUESTED | PASSED | FAILED
 ---
 <content>
 ```
 
-ロールごとに STATUS の取りうる値が異なる (reviewer は APPROVED/CHANGES_REQUESTED、qa は PASSED/FAILED など)。詳細は各テンプレを参照。
-
-## 自律運用 (`--no-ping` で無効化可能)
-
-`team-notifier.sh` が30分ごとに案件 PdM に自律チェックを促す。
-chief-notifier は1時間ごとに chief-pdm に全案件チェックを促す (常時 ON)。
-
-```
-[案件 PdM ping] 自律チェック: 各スペシャリストの進捗を確認してください。
-                アイドル中のスペシャリストに次のタスクを委譲、
-                ブロッカーがあれば解消...
-
-[chief PdM ping] 全案件定期チェック: 各案件 (kiro-team/teams/<initiative>/) の
-                  plans/ と results/<initiative>-pdm.md を確認し...
-```
-
-長時間 (1時間) notifier ログが更新されない案件は chief への ping に "stalled" として表示される。
-
 ## 設定
 
-### `setup-teams.sh` のオプション
+### `setup-teams.sh` / `setup-multi.sh` のオプション
 | フラグ | 説明 |
 |---|---|
 | `--roles <list>` | 使用ロール (default: pdm,frontend,backend,qa,reviewer) |
 | `--no-ping` | 案件 PdM の定期 ping を無効化 |
-| `--all` | `<project>/kiro-team/teams.conf` を読んで全案件起動 |
+| `--all` | `~/kiro-team/projects.conf` を読んで全案件起動 |
+| `--repos <list>` | 横断リポジトリ名 (setup-multi.sh / --all 時) |
 
-### `team-notifier.sh` の定数
-- `POLL_INTERVAL=5` — タスク/結果監視間隔 (秒)
-- `PROMPT_TIMEOUT=60` — エージェントのプロンプト待機タイムアウト
-- 第3引数で ping 間隔 (秒) を指定。`0` で無効
+### `stop-teams.sh` のオプション
+| フラグ | 説明 |
+|---|---|
+| `--all` | `~/kiro-team/projects.conf` を読んで全案件停止 |
+| `--clean` | セッション停止 + worktree 削除 |
 
-### `chief-notifier.sh` の定数
-- `PING_INTERVAL=3600` — chief への自律チェック間隔 (1時間)
-- `STALL_THRESHOLD=3600` — notifier が無音と判断する閾値
+### 環境変数
+| 変数 | 説明 | デフォルト |
+|---|---|---|
+| `KIRO_TEAM_HOME` | ライブラリの場所 | `~/kiro-team` |
+| `KIRO_TEAM_PROJECTS_DIR` | プロジェクトのルートディレクトリ | `~/projects` |
 
 ## トラブルシューティング
 
 ### setup を再実行したらタスクが届かなくなった
 旧セッションの specialist `.pane_*` ファイルが残っているとエージェントペイン未作成のまま skip される。
-`./kiro-team/scripts/stop.sh <initiative>` を打ってから setup し直す。
+`stop.sh <initiative>` を打ってから setup し直す。
 
 ### notifier が複数走っている
 `pgrep -af team-notifier` で確認。stop で全 kill されるが、強制終了で残った場合は手動で `pkill -f team-notifier`。
@@ -221,3 +238,12 @@ chief-notifier は1時間ごとに chief-pdm に全案件チェックを促す (
 ### エージェント定義 not found エラー
 `tasks/<initiative>-<role>.md` のファイル名と `.kiro/agents/` 内のエージェント定義名が一致しているか確認。
 存在しないロールに対応するタスクを書いた場合は、`setup.sh` を `--roles ...` に当該ロールを含めて再実行する必要がある。
+
+### setup-multi.sh で repos not found エラー
+`--repos` に指定したリポジトリが `~/projects/` 配下に存在するか確認。
+`KIRO_TEAM_PROJECTS_DIR` で別のディレクトリを指定している場合はそちらを確認。
+
+
+
+
+

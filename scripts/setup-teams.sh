@@ -120,8 +120,13 @@ fi
 
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 PROJECT_TEMPLATES_DIR="$PROJECT_ROOT/.kiro/agent-templates"
+PROJECTS_DIR="$(dirname "$PROJECT_ROOT")"
+# For --all mode: PROJECTS_DIR is ~/projects (sibling of kiro-team or explicit)
+GLOBAL_PROJECTS_DIR="${KIRO_TEAM_PROJECTS_DIR:-$HOME/projects}"
 SESSION_PREFIX="kiro-${PROJECT_NAME}"
-CHIEF_SESSION="${SESSION_PREFIX}-chief"
+CHIEF_SESSION="kiro-chief"
+CHIEF_DIR="${KIRO_TEAM_HOME:-$HOME/kiro-team}"
+CHIEF_AGENTS_DIR="${HOME}/.kiro/agents"
 
 # ---- Template lookup: project override → generic ----
 resolve_template() {
@@ -142,27 +147,20 @@ start_chief_if_needed() {
     return 0
   fi
 
-  # Generate chief-pdm.json from generic template (project override has priority)
-  local PROJECT_AGENTS_DIR="${PROJECT_ROOT}/.kiro/agents"
-  mkdir -p "$PROJECT_AGENTS_DIR"
-  if [ ! -f "${PROJECT_AGENTS_DIR}/chief-pdm.json" ]; then
-    local chief_template
-    if [ -f "$PROJECT_TEMPLATES_DIR/chief-pdm.json" ]; then
-      chief_template="$PROJECT_TEMPLATES_DIR/chief-pdm.json"
-    else
-      chief_template="$GENERIC_TEMPLATES_DIR/chief-pdm.json"
-    fi
-    sed "s/{project}/${PROJECT_NAME}/g" "$chief_template" > "${PROJECT_AGENTS_DIR}/chief-pdm.json"
-    echo "  [created] ${PROJECT_AGENTS_DIR}/chief-pdm.json"
+  # Generate chief-pdm.json in ~/.kiro/agents (global)
+  mkdir -p "$CHIEF_AGENTS_DIR"
+  if [ ! -f "${CHIEF_AGENTS_DIR}/chief-pdm.json" ]; then
+    local chief_template="$GENERIC_TEMPLATES_DIR/chief-pdm.json"
+    sed "s/{project}/global/g" "$chief_template" > "${CHIEF_AGENTS_DIR}/chief-pdm.json"
+    echo "  [created] ${CHIEF_AGENTS_DIR}/chief-pdm.json"
   fi
 
-  tmux new-session -d -s "$CHIEF_SESSION" -c "$PROJECT_ROOT"
+  tmux new-session -d -s "$CHIEF_SESSION" -c "$GLOBAL_PROJECTS_DIR"
   tmux send-keys -t "$CHIEF_SESSION" "kiro-cli chat --agent chief-pdm" Enter
-  local CHIEF_LOG="${PROJECT_ROOT}/kiro-team/.chief-notifier.log"
-  mkdir -p "$(dirname "$CHIEF_LOG")"
-  nohup "${SCRIPT_DIR}/chief-notifier.sh" "$PROJECT_ROOT" \
+  local CHIEF_LOG="${HOME}/.kiro/chief-notifier.log"
+  nohup "${SCRIPT_DIR}/chief-notifier.sh" "$GLOBAL_PROJECTS_DIR" \
     > "$CHIEF_LOG" 2>&1 &
-  echo "  [started] $CHIEF_SESSION (chief-pdm + chief-notifier)"
+  echo "  [started] $CHIEF_SESSION (chief-pdm + chief-notifier) @ $GLOBAL_PROJECTS_DIR"
 }
 
 # ---- Setup one initiative ----
@@ -255,7 +253,7 @@ setup_one() {
 # ---- Header ----
 echo "=== Project: $PROJECT_NAME ($PROJECT_ROOT) ==="
 if [ "$ALL_MODE" -eq 1 ]; then
-  echo "=== Mode: --all (read teams.conf) ==="
+  echo "=== Mode: --all (read projects.conf or teams.conf) ==="
 else
   echo "=== Mode: single initiative ==="
 fi
@@ -267,34 +265,51 @@ start_chief_if_needed
 
 # ---- Run setup ----
 if [ "$ALL_MODE" -eq 1 ]; then
-  CONF="$PROJECT_ROOT/kiro-team/teams.conf"
-  if [ ! -f "$CONF" ]; then
+  # ~/kiro-team/projects.conf からグローバル定義を読む
+  GLOBAL_CONF="${KIRO_TEAM_DIR}/projects.conf"
+
+  if [ ! -f "$GLOBAL_CONF" ]; then
     echo ""
-    echo "Error: teams.conf not found at $CONF"
-    echo "Hint: cp $PROJECT_ROOT/kiro-team/teams.conf.example $CONF and edit"
+    echo "Error: projects.conf not found at $GLOBAL_CONF"
+    echo "Hint: cp ${KIRO_TEAM_DIR}/projects.conf.example $GLOBAL_CONF and edit"
     exit 1
   fi
 
+  CONF="$GLOBAL_CONF"
+  echo "Using: $CONF"
+
   count=0
   while IFS= read -r line; do
-    # Skip comments and blank lines
     line="${line%%#*}"
     line="$(echo "$line" | xargs)"
     [ -z "$line" ] && continue
 
-    IFS=':' read -r conf_init conf_branch conf_roles <<< "$line"
-    [ -z "$conf_init" ] || [ -z "$conf_branch" ] && {
+    IFS=':' read -r conf_project conf_init conf_branch conf_roles conf_repos <<< "$line"
+
+    [ -z "$conf_project" ] || [ -z "$conf_init" ] || [ -z "$conf_branch" ] && {
       echo "  [warn] skipping invalid line: $line"
       continue
     }
     conf_roles="${conf_roles:-$ROLES}"
-    setup_one "$conf_init" "$conf_branch" "$conf_roles" "$PING_INTERVAL"
+    conf_project_root="${GLOBAL_PROJECTS_DIR}/${conf_project}"
+
+    if [ -n "$conf_repos" ]; then
+      "${SCRIPT_DIR}/setup-multi.sh" "$conf_project_root" "$conf_init" "$conf_branch" \
+        --repos "$conf_repos" --roles "$conf_roles" \
+        $([ "$PING_INTERVAL" = "0" ] && echo "--no-ping")
+    else
+      PROJECT_ROOT="$conf_project_root"
+      PROJECT_NAME=$(basename "$PROJECT_ROOT")
+      PROJECT_TEMPLATES_DIR="$PROJECT_ROOT/.kiro/agent-templates"
+      SESSION_PREFIX="kiro-${PROJECT_NAME}"
+      setup_one "$conf_init" "$conf_branch" "$conf_roles" "$PING_INTERVAL"
+    fi
     count=$((count + 1))
   done < "$CONF"
 
   if [ "$count" -eq 0 ]; then
     echo ""
-    echo "Warning: no initiatives in teams.conf"
+    echo "Warning: no initiatives found in $CONF"
   fi
 else
   setup_one "$INITIATIVE" "$BRANCH" "$ROLES" "$PING_INTERVAL"
@@ -304,7 +319,7 @@ fi
 echo ""
 echo "=== Setup complete ==="
 echo "Attach:"
-echo "  tmux attach -t $CHIEF_SESSION"
+echo "  tmux attach -t kiro-chief"
 if [ "$ALL_MODE" -eq 0 ]; then
   echo "  tmux attach -t ${SESSION_PREFIX}-${INITIATIVE}"
 else
@@ -312,3 +327,5 @@ else
     echo "  tmux attach -t $sess"
   done
 fi
+
+
