@@ -12,12 +12,14 @@
 
 | # | タスク | 担当 | ステータス |
 |---|---|---|---|
-| 1 | xxx | kiro-team-xxx | ⏸ 待機中 |
-| 2 | xxx | kiro-team-reviewer | ⏸ 待機中 |
-| 3 | xxx | kiro-team-qa | ⏸ 待機中 |
-| 4 | xxx | kiro-team-infra | ⏸ 待機中 |
+| 1 | xxx | {team}-backend | ⏸ 待機中 |
+| 2 | xxx | {team}-frontend | ⏸ 待機中 |
+| 3 | xxx | {team}-reviewer | ⏸ 待機中 |
+| 4 | xxx | {team}-qa | ⏸ 待機中 |
 
 ## 完了条件（DoD）
-- [ ] kiro-team-reviewer APPROVED
-- [ ] kiro-team-qa 全テスト PASS
-- [ ] kiro-team-infra プッシュ完了
+- [ ] {team}-reviewer APPROVED
+- [ ] {team}-qa 全テスト PASS
+
+
+
